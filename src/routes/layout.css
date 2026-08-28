@@ -1,7 +1,7 @@
 @import 'tailwindcss';
-@import "tw-animate-css";
-@import "shadcn-svelte/tailwind.css";
-@import "@fontsource-variable/inter";
+@import 'tw-animate-css';
+@import 'shadcn-svelte/tailwind.css';
+@import '@fontsource-variable/inter';
 
 @custom-variant dark (&:is(.dark *));
 
@@ -122,9 +122,117 @@
 		@apply border-border outline-ring/50;
 	}
 	body {
-		@apply bg-background text-foreground;
+		@apply overflow-x-hidden bg-background font-sans text-foreground antialiased;
 	}
 	html {
 		@apply font-sans;
+	}
+	button,
+	input,
+	select,
+	textarea {
+		font: inherit;
+	}
+}
+
+@layer components {
+	.topology {
+		@apply min-w-0 space-y-8;
+	}
+	.topology-heading {
+		@apply mb-3 flex items-center gap-2 text-sm font-medium text-muted-foreground;
+	}
+	.topology-heading span {
+		@apply font-normal;
+	}
+	.power-paths,
+	.direct-paths {
+		@apply space-y-3;
+	}
+	.power-path {
+		display: grid;
+		grid-template-columns:
+			minmax(9rem, 1fr) 2rem minmax(9rem, 1fr) 2rem minmax(9rem, 1fr)
+			2rem minmax(9rem, 1.35fr);
+		@apply items-center border border-border bg-background p-3;
+	}
+	.direct-path {
+		display: grid;
+		grid-template-columns: minmax(9rem, 1fr) 2rem minmax(9rem, 2fr);
+		@apply items-center border border-border bg-background p-3;
+	}
+	.path-stage {
+		@apply min-w-0;
+	}
+	.stage-label {
+		@apply mb-1.5 block text-xs font-medium text-muted-foreground;
+	}
+	.path-link {
+		@apply relative mx-1 block h-px bg-primary/60;
+	}
+	.path-link::after {
+		content: '';
+		@apply absolute top-1/2 right-0 size-1.5 -translate-y-1/2 rotate-45 border-t border-r border-primary;
+	}
+	.branch-stack {
+		@apply relative space-y-1.5;
+	}
+	.branch-stack::before {
+		content: '';
+		@apply absolute top-3 bottom-3 left-0 border-l border-primary/40;
+	}
+	.branch-item {
+		@apply relative pl-2;
+	}
+	.branch-item::before {
+		content: '';
+		@apply absolute top-1/2 left-0 w-2 border-t border-primary/40;
+	}
+	.port-label {
+		@apply mb-0.5 block text-[10px] text-muted-foreground;
+	}
+	.node {
+		@apply flex w-full items-center justify-between gap-2 border-l-2 border-border bg-background px-3 py-2.5 text-left transition hover:border-primary hover:bg-muted focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none;
+	}
+	.topology-node {
+		@apply min-w-0;
+	}
+	.node-kind {
+		@apply block text-[10px] font-medium text-muted-foreground;
+	}
+	.node-issue {
+		@apply border-l-destructive;
+	}
+	.missing-reference {
+		@apply block border-l-2 border-destructive bg-destructive/5 px-3 py-2 text-sm;
+	}
+	.empty-branch {
+		@apply block border-l border-border px-3 py-2 text-xs text-muted-foreground;
+	}
+	.topology-section {
+		@apply pt-1;
+	}
+	.unlinked-list {
+		@apply grid grid-cols-[repeat(auto-fill,minmax(10rem,1fr))] gap-2;
+	}
+}
+
+@media (max-width: 700px) {
+	.power-path,
+	.direct-path {
+		grid-template-columns: minmax(0, 1fr);
+		@apply gap-0 p-3;
+	}
+	.path-link {
+		@apply mx-5 my-1 h-5 w-px bg-primary/60;
+	}
+	.path-link::after {
+		@apply top-auto -right-[3px] bottom-0 rotate-[135deg];
+	}
+	.stage-label {
+		@apply mb-1;
+	}
+	.unlinked-list {
+		@apply grid-cols-1;
 	}
 }
