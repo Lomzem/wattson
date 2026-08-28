@@ -1,6 +1,7 @@
 ## Project Rules
 
 - Always use `bun`
+- A priority of this web app is to preserve user data across sessions
 
 ## UI Rules
 
