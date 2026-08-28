@@ -1,6 +1,7 @@
 ## Project Rules
 
 - Always use `bun`
+- Never include code or make changes to @read_only . It should only be used as a read-only reference
 - A priority of this web app is to preserve user data across sessions
 
 ## UI Rules
