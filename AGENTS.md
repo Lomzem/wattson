@@ -2,6 +2,10 @@
 
 - Always use `bun`
 
+## UI Rules
+
+- Always reach for `shadcn-svelte` before implementing UI manually
+
 ## UI Workflow
 
 To verify correctness of UI use this subagent workflow:
