@@ -1,4 +1,37 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
+
+async function recoveryDraft(page: Page) {
+	return page.evaluate(
+		() =>
+			new Promise<Record<string, unknown> | undefined>((resolve, reject) => {
+				const request = indexedDB.open('wattson-recovery');
+				request.onerror = () => reject(request.error);
+				request.onsuccess = () => {
+					const transaction = request.result.transaction('drafts', 'readonly');
+					const get = transaction.objectStore('drafts').get('active');
+					get.onerror = () => reject(get.error);
+					get.onsuccess = () => resolve(get.result);
+				};
+			})
+	);
+}
+
+async function storeRecoveryDraft(page: Page, draft: Record<string, unknown>) {
+	await page.evaluate(
+		(value) =>
+			new Promise<void>((resolve, reject) => {
+				const request = indexedDB.open('wattson-recovery');
+				request.onerror = () => reject(request.error);
+				request.onsuccess = () => {
+					const transaction = request.result.transaction('drafts', 'readwrite');
+					transaction.onerror = () => reject(transaction.error);
+					transaction.oncomplete = () => resolve();
+					transaction.objectStore('drafts').put(value, 'active');
+				};
+			}),
+		draft
+	);
+}
 
 test.describe('persistence and responsive behavior', () => {
 	test('persists the selected color mode', async ({ page }) => {
@@ -17,11 +50,73 @@ test.describe('persistence and responsive behavior', () => {
 		await page.getByRole('menuitem', { name: 'Add rail' }).click();
 		await page.getByRole('dialog').getByLabel('Name').fill('RECOVERED');
 		await page.getByRole('dialog').getByRole('button', { name: 'Save' }).click();
-		await page.waitForTimeout(800);
+		await expect.poll(async () => (await recoveryDraft(page))?.source).toContain('RECOVERED');
 		await page.reload();
 		await expect(page.getByRole('alertdialog', { name: 'Resume unsaved work?' })).toBeVisible();
 		await page.getByRole('button', { name: 'Resume' }).click();
 		await expect(page.getByRole('button', { name: /^rail RECOVERED/ })).toBeVisible();
+	});
+
+	test('restores an invalid raw YAML draft after a durable recovery write', async ({ page }) => {
+		await page.goto('/');
+		await page.getByRole('button', { name: 'New YAML' }).click();
+		await page.getByRole('button', { name: 'More file actions' }).click();
+		await page.getByRole('menuitem', { name: 'View Raw YAML' }).click();
+		await page.getByLabel('Raw YAML source').fill('rails: [');
+		await page.getByRole('button', { name: 'Apply' }).click();
+		await expect(page.getByRole('alert')).toBeVisible();
+		await expect
+			.poll(async () => ((await recoveryDraft(page))?.raw as { source?: string })?.source)
+			.toBe('rails: [');
+
+		await page.reload();
+		await page.getByRole('button', { name: 'Resume' }).click();
+		await expect(page.getByLabel('Raw YAML source')).toHaveValue('rails: [');
+	});
+
+	test('keeps invalid recovery data available when resume fails', async ({ page }) => {
+		await page.goto('/');
+		await page.waitForLoadState('networkidle');
+		await storeRecoveryDraft(page, {
+			filename: 'invalid.yaml',
+			source: 'rails: [',
+			baseSource: '',
+			timestamp: Date.now(),
+			version: 2
+		});
+
+		await page.reload();
+		const prompt = page.getByRole('alertdialog', { name: 'Resume unsaved work?' });
+		await expect(prompt).toBeVisible();
+		await page.getByRole('button', { name: 'Resume' }).click();
+		await expect(prompt).toBeVisible();
+		await expect(prompt.getByTestId('persistence-error')).toContainText('Cannot resume recovery');
+		await expect.poll(async () => (await recoveryDraft(page))?.source).toBe('rails: [');
+	});
+
+	test('keeps the Save As filename when the write fails', async ({ page }) => {
+		await page.addInitScript(() => {
+			Object.defineProperty(window, 'showSaveFilePicker', {
+				configurable: true,
+				value: async () => ({
+					name: 'failed-name.yaml',
+					getFile: async () => new File([''], 'failed-name.yaml'),
+					createWritable: async () => ({
+						write: async () => {
+							throw new Error('write failed');
+						},
+						close: async () => undefined
+					})
+				})
+			});
+		});
+		await page.goto('/');
+		await page.getByRole('button', { name: 'New YAML' }).click();
+		page.once('dialog', (dialog) => dialog.dismiss());
+		await page.getByRole('button', { name: 'More file actions' }).click();
+		await page.getByRole('menuitem', { name: 'Save As' }).click();
+		await expect(page.getByText('power-tree.yaml')).toBeVisible();
+		await expect(page.getByText('failed-name.yaml')).toHaveCount(0);
 	});
 
 	test('writes edited YAML through a direct file handle', async ({ page }) => {

@@ -6,67 +6,18 @@
 	import * as ContextMenu from '$lib/components/ui/context-menu';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import * as Kbd from '$lib/components/ui/kbd';
-	import {
-		applyNodeField,
-		parsePowerDocument,
-		type Kind,
-		type PowerNode
-	} from '$lib/power-document';
-	import type { EditorSession, LinkField } from './editor-session.svelte';
+	import { relationshipFields } from '$lib/power-fields';
+	import type { Kind, PowerNode } from '$lib/power-document';
+	import { buildTopology } from '$lib/topology';
+	import type { EditorSession } from './editor-session.svelte';
 
 	let { editor }: { editor: EditorSession } = $props();
 	let linkCancelButton = $state<HTMLButtonElement | null>(null);
-	const visibleLinkFeedback = $derived(
-		editor.linkFeedback?.linkedSource && editor.parsed?.source !== editor.linkFeedback.linkedSource
-			? null
-			: editor.linkFeedback
+	const topology = $derived(
+		editor.parsed
+			? buildTopology(editor.parsed.model)
+			: { conversions: [], direct: [], unlinked: [] }
 	);
-	const topology = $derived.by(() => {
-		if (!editor.parsed) return { conversions: [], direct: [], unlinked: [] };
-		const model = editor.parsed.model;
-		const rails = [...model.sources, ...model.rails];
-		const findRail = (name: string) => rails.find((node) => node.name === name);
-		const loadRail = (node: PowerNode) => String(node.data.rail ?? node.data.output ?? '');
-		const conversions = model.regulators.map((regulator) => {
-			const rawInputs = regulator.data.input
-				? { VIN: regulator.data.input }
-				: ((regulator.data.inputs ?? {}) as Record<string, unknown>);
-			const inputs = Object.entries(rawInputs).map(([port, value]) => ({
-				port,
-				name: String(value ?? ''),
-				node: findRail(String(value ?? ''))
-			}));
-			const outputName = String(regulator.data.output ?? regulator.data.output_rail ?? '');
-			return {
-				regulator,
-				inputs,
-				outputName,
-				output: findRail(outputName),
-				loads: model.loads.filter((load) => loadRail(load) === outputName)
-			};
-		});
-		const outputNames = new Set(conversions.map((conversion) => conversion.outputName));
-		const direct = rails
-			.map((rail) => ({ rail, loads: model.loads.filter((load) => loadRail(load) === rail.name) }))
-			.filter((branch) => branch.loads.length && !outputNames.has(branch.rail.name));
-		const usedRailNames = new Set([
-			...conversions.flatMap((conversion) => conversion.inputs.map((input) => input.name)),
-			...conversions.map((conversion) => conversion.outputName),
-			...direct.map((branch) => branch.rail.name)
-		]);
-		const representedLoads = new Set([
-			...conversions.flatMap((conversion) => conversion.loads),
-			...direct.flatMap((branch) => branch.loads)
-		]);
-		return {
-			conversions,
-			direct,
-			unlinked: [
-				...rails.filter((rail) => !usedRailNames.has(rail.name)),
-				...model.loads.filter((load) => !representedLoads.has(load))
-			]
-		};
-	});
 
 	type NodeMetric = { key: string; label: string; value: string; primary?: boolean };
 	const compactNumber = (value: unknown) =>
@@ -173,25 +124,9 @@
 		};
 	}
 
-	function isLinkTarget(node: PowerNode) {
-		if (!editor.linkMode || !node.name) return false;
-		return editor.linkMode.field === 'output'
-			? node.kind === 'rail'
-			: node.kind === 'source' || node.kind === 'rail';
-	}
-	function startLink(node: PowerNode, field: LinkField) {
-		if (node.kind !== 'regulator' && node.kind !== 'load') return;
-		editor.selected = null;
-		editor.rawOpen = false;
-		editor.linkMode = {
-			kind: node.kind,
-			index: node.index,
-			field,
-			name: node.name || `Unnamed ${node.kind}`
-		};
-		editor.linkError = '';
-		editor.linkFeedback = null;
-		void tick().then(() => requestAnimationFrame(() => linkCancelButton?.focus()));
+	function startLink(node: PowerNode, field: 'input' | 'output' | 'rail') {
+		if (editor.startLink(node, field))
+			void tick().then(() => requestAnimationFrame(() => linkCancelButton?.focus()));
 	}
 	async function cancelLink(restoreFocus = true) {
 		const initiator = editor.linkMode;
@@ -201,47 +136,6 @@
 		document
 			.querySelector<HTMLElement>(`[data-node-key="${initiator.kind}:${initiator.index}"]`)
 			?.focus();
-	}
-	function commitLink(target: PowerNode) {
-		if (!editor.parsed || !editor.linkMode || !isLinkTarget(target)) return;
-		const before = editor.parsed.source;
-		const next = applyNodeField(
-			editor.parsed,
-			editor.linkMode.kind,
-			editor.linkMode.index,
-			editor.linkMode.field,
-			target.name
-		);
-		if (
-			next.model.issues.some(
-				(issue) => issue.message === 'The regulator topology contains a cycle.'
-			)
-		) {
-			editor.linkError = `Cannot link ${editor.linkMode.name} to ${target.name}: this would create a regulator cycle.`;
-			return;
-		}
-		const relationship = editor.linkMode.field === 'rail' ? 'supply' : editor.linkMode.field;
-		editor.parsed = next;
-		editor.linkFeedback = {
-			message: `${editor.linkMode.name} ${relationship} changed to ${target.name}.`,
-			undoSource: before,
-			linkedSource: next.source
-		};
-		editor.linkMode = null;
-		editor.linkError = '';
-	}
-	function undoLink() {
-		if (!editor.linkFeedback?.undoSource) return;
-		editor.parsed = parsePowerDocument(editor.linkFeedback.undoSource);
-		editor.linkFeedback = { message: 'Link change undone.' };
-	}
-	function linkInstruction() {
-		if (!editor.linkMode) return '';
-		if (editor.linkMode.field === 'input')
-			return `Select a source or rail for ${editor.linkMode.name}'s input.`;
-		if (editor.linkMode.field === 'output')
-			return `Select a rail for ${editor.linkMode.name}'s output.`;
-		return `Select a source or rail to supply ${editor.linkMode.name}.`;
 	}
 	function handleLinkEscape(event: KeyboardEvent) {
 		if (event.key !== 'Escape' || !editor.linkMode) return;
@@ -255,7 +149,7 @@
 
 {#snippet topologyNode(node: PowerNode, context: string)}
 	{@const metrics = nodeMetrics(node)}
-	{@const linkTarget = isLinkTarget(node)}
+	{@const linkTarget = editor.isLinkTarget(node)}
 	{@const linkBlocked = Boolean(editor.linkMode && !linkTarget)}
 	<div class="node-shell">
 		<ContextMenu.Root>
@@ -274,7 +168,7 @@
 						tabindex={linkBlocked ? -1 : 0}
 						disabled={linkBlocked}
 						aria-label={`${node.kind} ${node.name || 'unnamed'}, ${context}${linkTarget ? ', link target' : ''}${metrics.items.length ? `, ${metrics.items.map((metric) => `${metric.label} ${metric.value}`).join(', ')}` : ''}`}
-						onclick={() => (linkTarget ? commitLink(node) : editor.selectNode(node))}
+						onclick={() => (linkTarget ? editor.commitLink(node) : editor.selectNode(node))}
 					>
 						<span class="node-content"
 							><span class="node-kind-row"
@@ -307,16 +201,10 @@
 						editor.selectNode(node);
 					}}>Edit</ContextMenu.Item
 				>
-				{#if node.kind === 'regulator'}<ContextMenu.Item
+				{#each relationshipFields(node.kind) as field (field.key)}<ContextMenu.Item
 						class="node-action-item"
-						onclick={() => startLink(node, 'input')}>Change input</ContextMenu.Item
-					><ContextMenu.Item class="node-action-item" onclick={() => startLink(node, 'output')}
-						>Change output</ContextMenu.Item
-					>
-				{:else if node.kind === 'load'}<ContextMenu.Item
-						class="node-action-item"
-						onclick={() => startLink(node, 'rail')}>Change supply</ContextMenu.Item
-					>{/if}
+						onclick={() => startLink(node, field.key)}>{field.relationship.action}</ContextMenu.Item
+					>{/each}
 				<ContextMenu.Item
 					class="node-action-item"
 					variant="destructive"
@@ -343,16 +231,11 @@
 				<DropdownMenu.Item class="node-action-item" onclick={() => editor.selectNode(node)}
 					>Edit</DropdownMenu.Item
 				>
-				{#if node.kind === 'regulator'}<DropdownMenu.Item
+				{#each relationshipFields(node.kind) as field (field.key)}<DropdownMenu.Item
 						class="node-action-item"
-						onclick={() => startLink(node, 'input')}>Change input</DropdownMenu.Item
-					><DropdownMenu.Item class="node-action-item" onclick={() => startLink(node, 'output')}
-						>Change output</DropdownMenu.Item
-					>
-				{:else if node.kind === 'load'}<DropdownMenu.Item
-						class="node-action-item"
-						onclick={() => startLink(node, 'rail')}>Change supply</DropdownMenu.Item
-					>{/if}
+						onclick={() => startLink(node, field.key)}
+						>{field.relationship.action}</DropdownMenu.Item
+					>{/each}
 				<DropdownMenu.Item
 					class="node-action-item text-destructive"
 					onclick={() => editor.deleteNode(node)}>Delete</DropdownMenu.Item
@@ -382,7 +265,7 @@
 			></Card.Action
 		>
 	</Card.Header>
-	{#if editor.linkMode || visibleLinkFeedback}<div
+	{#if editor.linkMode || editor.visibleLinkFeedback}<div
 			class="link-status-bar"
 			class:link-status-error={Boolean(editor.linkError)}
 			role={editor.linkError ? 'alert' : 'status'}
@@ -390,7 +273,7 @@
 		>
 			<div class="min-w-0">
 				<p class="font-medium">
-					{editor.linkMode ? linkInstruction() : visibleLinkFeedback?.message}
+					{editor.linkMode ? editor.linkInstruction() : editor.visibleLinkFeedback?.message}
 				</p>
 				{#if editor.linkError}<p class="mt-1 text-sm text-destructive">{editor.linkError}</p>{/if}
 			</div>
@@ -400,10 +283,10 @@
 					variant="outline"
 					size="sm"
 					onclick={() => cancelLink()}>Cancel</Button
-				>{:else if visibleLinkFeedback?.undoSource}<Button
+				>{:else if editor.visibleLinkFeedback?.undoSource}<Button
 					variant="outline"
 					size="sm"
-					onclick={undoLink}>Undo</Button
+					onclick={() => editor.undoLink()}>Undo</Button
 				>{/if}
 		</div>{/if}
 	{#if editor.hasTopologyEntities}<Card.Content

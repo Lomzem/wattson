@@ -5,32 +5,23 @@
 	import { Textarea } from '$lib/components/ui/textarea';
 	import * as Select from '$lib/components/ui/select';
 	import * as Sheet from '$lib/components/ui/sheet';
+	import { fields } from '$lib/power-fields';
+	import type { FieldKey, LinkField } from '$lib/power-document';
 	import type { EditorSession } from './editor-session.svelte';
-	import { fields } from './editor-session.svelte';
 
 	let { editor }: { editor: EditorSession } = $props();
 	let rawTextarea = $state<HTMLTextAreaElement | null>(null);
 
 	function inputComponentField(event: Event) {
 		const input = event.currentTarget as HTMLInputElement;
-		const key = input.id.startsWith('field-') ? input.id.slice(6) : '';
-		if (!key) return;
-		editor.componentDraft[key] = input.value;
-		if (key === 'name') editor.editField(editor.currentNode, key, input.value, false);
+		const key = input.id.startsWith('field-') ? (input.id.slice(6) as FieldKey) : undefined;
+		if (key) editor.setComponentField(key, input.value);
 	}
 
 	function blurComponentField(event: FocusEvent) {
 		const input = event.currentTarget as HTMLInputElement;
-		const key = input.id.startsWith('field-') ? input.id.slice(6) : '';
-		if (
-			key &&
-			key !== 'name' &&
-			!editor.cancelPending &&
-			!editor.previewState.error &&
-			(input.type !== 'number' || !editor.previewState.hasNewError) &&
-			editor.previewState.document
-		)
-			editor.parsed = editor.previewState.document;
+		const key = input.id.startsWith('field-') ? (input.id.slice(6) as FieldKey) : undefined;
+		if (key) editor.commitComponentBlur(key, input.type);
 	}
 
 	function focusRawStart(event: Event) {
@@ -77,7 +68,13 @@
 							<Label id={`field-${field.key}-label`} for={`field-${field.key}`}>{field.label}</Label
 							>
 							{#if (editor.currentNode.kind === 'regulator' && (field.key === 'input' || field.key === 'output')) || (editor.currentNode.kind === 'load' && field.key === 'rail')}
-								<Select.Root type="single" bind:value={editor.componentDraft[field.key]}>
+								<Select.Root
+									type="single"
+									bind:value={
+										() => editor.componentDraft[field.key],
+										(value) => editor.setComponentField(field.key, value ?? '')
+									}
+								>
 									<Select.Trigger
 										id={`field-${field.key}`}
 										aria-labelledby={`field-${field.key}-label`}
@@ -89,7 +86,7 @@
 										>
 									</Select.Trigger>
 									<Select.Content>
-										{#each editor.relationshipOptions(editor.currentNode.kind, field.key) as option (option)}
+										{#each editor.relationshipOptions(editor.currentNode.kind, field.key as LinkField) as option (option)}
 											<Select.Item class="relationship-select-item" value={option} label={option} />
 										{/each}
 									</Select.Content>
@@ -113,7 +110,7 @@
 					<div class="mx-4 border-l-2 border-destructive pl-3">
 						<h3 class="text-sm font-medium">Issues</h3>
 						<ul class="mt-2 space-y-2 text-sm">
-							{#each editor.currentIssues as issue (issue.message)}<li>
+							{#each editor.currentIssues as issue (issue.id)}<li>
 									<span class="font-medium capitalize">{issue.severity}:</span>
 									{issue.message}
 								</li>{/each}
@@ -126,7 +123,7 @@
 						class="order-2"
 						type="button"
 						variant="outline"
-						onpointerdown={() => (editor.cancelPending = true)}
+						onpointerdown={() => editor.beginComponentCancel()}
 						onclick={() => editor.cancelComponentEdit()}>Cancel</Button
 					>
 					<Button
@@ -141,7 +138,12 @@
 	</Sheet.Content>
 </Sheet.Root>
 
-<Sheet.Root bind:open={editor.rawOpen}>
+<Sheet.Root
+	open={editor.rawOpen}
+	onOpenChange={(open) => {
+		if (!open) editor.closeRaw();
+	}}
+>
 	<Sheet.Content class="sm:max-w-2xl" onOpenAutoFocus={focusRawStart}>
 		<Sheet.Header><Sheet.Title>Raw YAML</Sheet.Title></Sheet.Header>
 		<div class="flex min-h-0 flex-1 flex-col gap-2 px-4">
@@ -151,7 +153,7 @@
 					aria-label="Raw YAML source"
 					bind:ref={rawTextarea}
 					class="min-h-80 flex-1 resize-none font-mono text-xs"
-					bind:value={editor.rawDraft}
+					bind:value={() => editor.rawDraft, (value) => editor.setRawDraft(value)}
 					aria-invalid={Boolean(editor.rawError)}
 				/>
 			{/key}
@@ -160,13 +162,7 @@
 				</p>{/if}
 		</div>
 		<Sheet.Footer>
-			<Button
-				variant="outline"
-				onclick={() => {
-					editor.rawOpen = false;
-					editor.rawError = '';
-				}}>Cancel</Button
-			>
+			<Button variant="outline" onclick={() => editor.closeRaw()}>Cancel</Button>
 			<Button onclick={() => editor.applyRaw()}>Apply</Button>
 		</Sheet.Footer>
 	</Sheet.Content>

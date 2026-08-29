@@ -12,7 +12,7 @@
 	import * as Kbd from '$lib/components/ui/kbd';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { parsePowerDocument } from '$lib/power-document';
-	import { RECOVERY_VERSION, recoveryService, type RecoveryDraft } from '$lib/recovery';
+	import { recoveryService, type RecoveryDraft } from '$lib/recovery';
 	import { compareAndWriteHandle, readFile, readHandle } from '$lib/file-workflows';
 	import EditorPanels from './EditorPanels.svelte';
 	import { EditorSession } from './editor-session.svelte';
@@ -28,6 +28,7 @@
 	let conflictOpen = $state(false);
 	let recovery = $state<RecoveryDraft | undefined>();
 	let recoveryOpen = $state(false);
+	let persistenceError = $state('');
 	let input: HTMLInputElement;
 	const fileInput: Attachment<HTMLInputElement> = (node) => {
 		input = node;
@@ -52,18 +53,24 @@
 		{ action: 'View Raw YAML', keys: ['Ctrl', 'Shift', 'Y'] }
 	]);
 
+	function reportPersistenceFailure(action: string, error: unknown) {
+		persistenceError = `${action}: ${error instanceof Error ? error.message : String(error)}`;
+	}
+
+	async function clearStoredRecovery(action = 'Cannot clear recovery') {
+		try {
+			await Effect.runPromise(recoveryService.clear);
+		} catch (error) {
+			reportPersistenceFailure(action, error);
+		}
+	}
+
 	async function openFile(file: File, fileHandle?: FileSystemFileHandle) {
 		if (!/\.ya?ml$/i.test(file.name)) return;
 		try {
-			const next = await Effect.runPromise(
-				Effect.gen(function* () {
-					const source = yield* readFile(file);
-					const document = yield* Effect.try(() => parsePowerDocument(source));
-					yield* recoveryService.clear.pipe(Effect.ignore);
-					return document;
-				})
-			);
-			editor.setDocument(next, file.name, fileHandle);
+			const source = await Effect.runPromise(readFile(file));
+			editor.setDocument(parsePowerDocument(source), file.name, fileHandle);
+			await clearStoredRecovery();
 		} catch (error) {
 			window.alert(`Cannot open YAML: ${error instanceof Error ? error.message : error}`);
 		}
@@ -71,7 +78,7 @@
 
 	async function openCommand() {
 		editor.cancelActiveLink();
-		if (editor.dirty && !window.confirm('Discard the current unsaved changes?')) return;
+		if (editor.hasUnsavedWork && !window.confirm('Discard the current unsaved changes?')) return;
 		const picker = (window as PickerWindow).showOpenFilePicker;
 		if (!picker) return input.click();
 		try {
@@ -86,9 +93,9 @@
 	}
 
 	function newCommand() {
-		if (editor.dirty && !window.confirm('Discard the current unsaved changes?')) return;
+		if (editor.hasUnsavedWork && !window.confirm('Discard the current unsaved changes?')) return;
 		editor.newDocument();
-		void Effect.runPromise(recoveryService.clear).catch(() => undefined);
+		void clearStoredRecovery();
 	}
 
 	function download() {
@@ -115,9 +122,10 @@
 			editor.setDocument(parsePowerDocument(result.disk), target.name, target);
 			return;
 		}
-		await Effect.runPromise(recoveryService.clear).catch(() => undefined);
+		await clearStoredRecovery();
 		editor.handle = target;
 		editor.baseSource = source;
+		return result;
 	}
 	async function saveCommand() {
 		if (!editor.parsed || (editor.handle && !editor.dirty)) return;
@@ -134,8 +142,8 @@
 				suggestedName: editor.filename,
 				types: [{ description: 'YAML', accept: { 'application/yaml': ['.yaml', '.yml'] } }]
 			});
-			editor.filename = nextHandle.name;
-			await writeDirect(nextHandle, true);
+			const result = await writeDirect(nextHandle, true);
+			if (result?.action === 'written') editor.filename = nextHandle.name;
 		} catch (error) {
 			if ((error as DOMException).name !== 'AbortError') window.alert(String(error));
 		}
@@ -154,24 +162,28 @@
 		);
 	}
 	async function clearRecovery() {
-		await Effect.runPromise(recoveryService.clear).catch(() => undefined);
+		await clearStoredRecovery();
 		recovery = undefined;
 		recoveryOpen = false;
 	}
-	function recoveryDraft(): RecoveryDraft | undefined {
-		if (!editor.parsed || !editor.dirty) return;
-		return {
-			filename: editor.filename,
-			source: editor.parsed.source,
-			baseSource: editor.baseSource,
-			handle: editor.handle,
-			timestamp: Date.now(),
-			version: RECOVERY_VERSION
-		};
+	async function saveRecovery(draft = editor.recoveryDraft()) {
+		if (!draft) return;
+		try {
+			await Effect.runPromise(recoveryService.save(draft));
+		} catch (error) {
+			reportPersistenceFailure('Cannot save recovery', error);
+		}
 	}
-	async function saveRecovery(draft = recoveryDraft()) {
-		if (draft) await Effect.runPromise(recoveryService.save(draft)).catch(() => undefined);
+	function resumeRecovery() {
+		if (!recovery) return;
+		try {
+			editor.restoreRecovery(recovery);
+			recoveryOpen = false;
+		} catch (error) {
+			reportPersistenceFailure('Cannot resume recovery', error);
+		}
 	}
+
 	function handleVisibilityChange() {
 		if (document.visibilityState === 'hidden') void saveRecovery();
 	}
@@ -211,9 +223,9 @@
 		);
 
 	$effect(() => {
-		const draft = recoveryDraft();
+		const draft = editor.recoveryDraft();
 		if (!draft) {
-			if (editor.parsed) void Effect.runPromise(recoveryService.clear).catch(() => undefined);
+			if (editor.parsed) void clearStoredRecovery();
 			return;
 		}
 		const timer = setTimeout(() => void saveRecovery(draft), 700);
@@ -228,13 +240,22 @@
 					recoveryOpen = true;
 				}
 			})
-			.catch(() => undefined);
+			.catch((error) => reportPersistenceFailure('Cannot load recovery', error));
 	});
 </script>
 
 <svelte:head><title>Wattson | Powerman YAML editor</title></svelte:head>
 <svelte:window onfocus={handleWindowFocus} />
 <svelte:document onvisibilitychange={handleVisibilityChange} />
+
+{#if persistenceError && !recoveryOpen}<div
+		class="fixed right-4 bottom-4 z-50 flex max-w-md items-center gap-3 rounded-md border border-destructive bg-card p-3 text-sm text-destructive shadow-lg"
+		role="alert"
+		data-testid="persistence-error"
+	>
+		<span>{persistenceError}</span>
+		<Button variant="ghost" size="sm" onclick={() => (persistenceError = '')}>Dismiss</Button>
+	</div>{/if}
 
 <input
 	class="sr-only"
@@ -383,19 +404,16 @@
 				>{recovery
 					? `${recovery.filename}, saved ${new Date(recovery.timestamp).toLocaleString()}`
 					: ''}</AlertDialog.Description
-			></AlertDialog.Header
+			>{#if persistenceError}<p
+					class="text-sm text-destructive"
+					role="alert"
+					data-testid="persistence-error"
+				>
+					{persistenceError}
+				</p>{/if}</AlertDialog.Header
 		><AlertDialog.Footer
 			><AlertDialog.Cancel onclick={clearRecovery}>Discard</AlertDialog.Cancel><AlertDialog.Action
-				onclick={() => {
-					if (recovery)
-						editor.setDocument(
-							parsePowerDocument(recovery.source),
-							recovery.filename,
-							recovery.handle,
-							recovery.baseSource
-						);
-					recoveryOpen = false;
-				}}>Resume</AlertDialog.Action
+				onclick={resumeRecovery}>Resume</AlertDialog.Action
 			></AlertDialog.Footer
 		></AlertDialog.Content
 	></AlertDialog.Root

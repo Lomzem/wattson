@@ -1,24 +1,24 @@
+import { fields, relationshipField } from '$lib/power-fields';
 import {
 	applyNodeField,
 	canonicalDocument,
+	findNode,
+	nodeFieldValue,
+	nodesOfKind,
+	nodeSubject,
 	parsePowerDocument,
+	powerNodes,
 	replaceSection,
 	sectionData,
+	type FieldKey,
+	type IssueId,
 	type Kind,
+	type LinkField,
 	type ParsedPowerDocument,
 	type PowerNode
 } from '$lib/power-document';
+import { RECOVERY_VERSION, type RecoveryDraft } from '$lib/recovery';
 
-export type Field = {
-	key: string;
-	label: string;
-	type?: 'number';
-	step?: string;
-	min?: string;
-	max?: string;
-};
-
-export type LinkField = 'input' | 'output' | 'rail';
 export type LinkMode = {
 	kind: 'regulator' | 'load';
 	index: number;
@@ -27,68 +27,13 @@ export type LinkMode = {
 };
 export type LinkFeedback = { message: string; undoSource?: string; linkedSource?: string };
 
-export const fields: Record<Kind, Field[]> = {
-	source: [
-		{ key: 'name', label: 'Name' },
-		{ key: 'nominal', label: 'Nominal voltage', type: 'number', step: '0.1', min: '0' },
-		{ key: 'min', label: 'Minimum voltage', type: 'number', step: '0.1', min: '0' },
-		{ key: 'max', label: 'Maximum voltage', type: 'number', step: '0.1', min: '0' }
-	],
-	rail: [
-		{ key: 'name', label: 'Name' },
-		{ key: 'nominal', label: 'Nominal voltage', type: 'number', step: '0.1', min: '0' },
-		{ key: 'min', label: 'Minimum voltage', type: 'number', step: '0.1', min: '0' },
-		{ key: 'max', label: 'Maximum voltage', type: 'number', step: '0.1', min: '0' }
-	],
-	regulator: [
-		{ key: 'name', label: 'Name' },
-		{ key: 'input', label: 'Input rail' },
-		{ key: 'output', label: 'Output rail' },
-		{ key: 'efficiency', label: 'Efficiency', type: 'number', step: '0.01', min: '0', max: '1' }
-	],
-	load: [
-		{ key: 'name', label: 'Name' },
-		{ key: 'rail', label: 'Rail' },
-		{ key: 'quantity', label: 'Quantity', type: 'number', step: '1', min: '0' },
-		{ key: 'typical', label: 'Typical current', type: 'number', step: '0.0001', min: '0' },
-		{ key: 'maximum', label: 'Maximum current', type: 'number', step: '0.0001', min: '0' }
-	]
-};
-
-export function nodeValue(node: PowerNode, key: string): string | number {
-	const data = node.data;
-	if (node.kind === 'source') {
-		const voltage = (data.voltage ?? {}) as Record<string, unknown>;
-		if (key === 'nominal')
-			return (voltage.nominal ?? data.nominal_voltage ?? '') as string | number;
-		if (key === 'min' || key === 'max') return (voltage[key] ?? '') as string | number;
-	}
-	if (node.kind === 'rail') {
-		if (key === 'nominal') return (data.nominal_voltage ?? data.voltage ?? '') as string | number;
-		if (key === 'min') return (data.min_voltage ?? '') as string | number;
-		if (key === 'max') return (data.max_voltage ?? '') as string | number;
-	}
-	if (node.kind === 'regulator') {
-		if (key === 'input')
-			return (data.input ?? Object.values((data.inputs ?? {}) as object)[0] ?? '') as
-				string | number;
-		if (key === 'output') return (data.output ?? data.output_rail ?? '') as string | number;
-	}
-	if (node.kind === 'load') {
-		if (key === 'rail') return (data.rail ?? data.output ?? '') as string | number;
-		if (key === 'typical' || key === 'maximum')
-			return (((data.current ?? {}) as Record<string, unknown>)[key] ?? '') as string | number;
-	}
-	return (data[key] ?? '') as string | number;
-}
-
 export class EditorSession {
 	parsed = $state.raw<ParsedPowerDocument | null>(null);
 	filename = $state('power-tree.yaml');
 	baseSource = $state('');
 	handle = $state<FileSystemFileHandle | undefined>();
 	selected = $state<{ kind: Kind; index: number } | null>(null);
-	componentDraft = $state<Record<string, string>>({});
+	componentDraft = $state<Partial<Record<FieldKey, string>>>({});
 	sheetSourceBefore = $state('');
 	cancelPending = $state(false);
 	rawOpen = $state(false);
@@ -100,24 +45,26 @@ export class EditorSession {
 	linkFeedback = $state<LinkFeedback | null>(null);
 
 	dirty = $derived(Boolean(this.parsed && this.parsed.source !== this.baseSource));
+	hasUnsavedWork = $derived.by(() => {
+		if (!this.parsed) return false;
+		if (this.dirty || (this.rawOpen && this.rawDraft !== this.parsed.source)) return true;
+		return Boolean(
+			this.currentNode &&
+			fields[this.currentNode.kind].some(
+				({ key }) => this.componentDraft[key] !== String(nodeFieldValue(this.currentNode!, key))
+			)
+		);
+	});
 	hasTopologyEntities = $derived(
 		Boolean(
-			this.parsed &&
-			(this.parsed.model.sources.length ||
-				this.parsed.model.regulators.length ||
-				this.parsed.model.rails.length ||
-				this.parsed.model.loads.length)
+			this.parsed && powerNodes(this.parsed.model, 'source', 'regulator', 'rail', 'load').length
 		)
 	);
-	currentNode = $derived.by(() => {
-		if (!this.parsed || !this.selected) return undefined;
-		return {
-			source: this.parsed.model.sources,
-			regulator: this.parsed.model.regulators,
-			rail: this.parsed.model.rails,
-			load: this.parsed.model.loads
-		}[this.selected.kind][this.selected.index];
-	});
+	currentNode = $derived.by(() =>
+		this.parsed && this.selected
+			? findNode(this.parsed.model, nodeSubject(this.selected.kind, this.selected.index))
+			: undefined
+	);
 	previewState = $derived.by(() => {
 		if (!this.parsed || !this.selected || !this.currentNode)
 			return { document: this.parsed, error: '', hasNewError: false };
@@ -126,7 +73,7 @@ export class EditorSession {
 			for (const field of fields[this.currentNode.kind]) {
 				if (field.key === 'name') continue;
 				const raw = this.componentDraft[field.key] ?? '';
-				if (raw === String(nodeValue(this.currentNode, field.key))) continue;
+				if (raw === String(nodeFieldValue(this.currentNode, field.key))) continue;
 				document = applyNodeField(
 					document,
 					this.currentNode.kind,
@@ -136,12 +83,12 @@ export class EditorSession {
 					field.type === 'number'
 				);
 			}
-			const existing = this.parsed.model.issues.map((issue) => issue.message);
+			const existing = this.parsed.model.issues.map(({ id }) => id);
 			return {
 				document,
 				error: '',
 				hasNewError: document.model.issues.some(
-					(issue) => issue.severity === 'error' && !existing.includes(issue.message)
+					(issue) => issue.severity === 'error' && !existing.includes(issue.id)
 				)
 			};
 		} catch (error) {
@@ -157,12 +104,24 @@ export class EditorSession {
 			(issue) =>
 				!this.currentNode ||
 				!issue.subject ||
-				issue.subject === `${this.currentNode.kind}:${this.currentNode.index}`
+				issue.subject === nodeSubject(this.currentNode.kind, this.currentNode.index)
 		) ?? []),
 		...(this.previewState.error
-			? [{ severity: 'error' as const, message: this.previewState.error }]
+			? [
+					{
+						id: `preview:error` as IssueId,
+						code: 'invalid-number' as const,
+						severity: 'error' as const,
+						message: this.previewState.error
+					}
+				]
 			: [])
 	]);
+	visibleLinkFeedback = $derived(
+		this.linkFeedback?.linkedSource && this.parsed?.source !== this.linkFeedback.linkedSource
+			? null
+			: this.linkFeedback
+	);
 
 	setDocument(
 		next: ParsedPowerDocument,
@@ -175,7 +134,11 @@ export class EditorSession {
 		this.baseSource = base;
 		this.handle = fileHandle;
 		this.selected = null;
+		this.componentDraft = {};
+		this.sheetSourceBefore = '';
 		this.rawOpen = false;
+		this.rawDraft = '';
+		this.rawError = '';
 		this.clearLinkState();
 	}
 
@@ -199,7 +162,7 @@ export class EditorSession {
 		this.sheetSourceBefore = this.parsed?.source ?? '';
 		this.cancelPending = false;
 		this.componentDraft = Object.fromEntries(
-			fields[node.kind].map((field) => [field.key, String(nodeValue(node, field.key))])
+			fields[node.kind].map((field) => [field.key, String(nodeFieldValue(node, field.key))])
 		);
 		this.selected = { kind: node.kind, index: node.index };
 	}
@@ -208,28 +171,50 @@ export class EditorSession {
 		this.componentDraft = {};
 		this.selected = null;
 	}
-	cancelComponentEdit() {
+
+	beginComponentCancel() {
 		this.cancelPending = true;
+	}
+
+	cancelComponentEdit() {
+		this.beginComponentCancel();
 		if (this.parsed && this.sheetSourceBefore)
 			this.parsed = parsePowerDocument(this.sheetSourceBefore);
 		this.closeComponentSheet();
 		setTimeout(() => (this.cancelPending = false));
 	}
+
 	commitComponentDraft() {
 		if (!this.currentNode || this.previewState.hasNewError || !this.previewState.document) return;
 		this.parsed = this.previewState.document;
 		this.closeComponentSheet();
 	}
 
-	editField(node: PowerNode | undefined, key: string, raw: string, numeric: boolean) {
+	setComponentField(key: FieldKey, raw: string) {
+		this.componentDraft[key] = raw;
+		if (key === 'name') this.editField(this.currentNode, key, raw, false);
+	}
+
+	commitComponentBlur(key: FieldKey, inputType: string) {
+		if (
+			key !== 'name' &&
+			!this.cancelPending &&
+			!this.previewState.error &&
+			(inputType !== 'number' || !this.previewState.hasNewError) &&
+			this.previewState.document
+		)
+			this.parsed = this.previewState.document;
+	}
+
+	editField(node: PowerNode | undefined, key: FieldKey, raw: string, numeric: boolean) {
 		if (!this.parsed || !node) return;
 		try {
-			const existing = this.parsed.model.issues.map((issue) => issue.message);
+			const existing = this.parsed.model.issues.map(({ id }) => id);
 			const next = applyNodeField(this.parsed, node.kind, node.index, key, raw, numeric);
 			if (
 				numeric &&
 				next.model.issues.some(
-					(issue) => issue.severity === 'error' && !existing.includes(issue.message)
+					(issue) => issue.severity === 'error' && !existing.includes(issue.id)
 				)
 			)
 				return;
@@ -248,32 +233,38 @@ export class EditorSession {
 		this.rawRevision += 1;
 		this.rawOpen = true;
 	}
+
+	setRawDraft(source: string) {
+		this.rawDraft = source;
+	}
+
+	closeRaw() {
+		this.rawOpen = false;
+		this.rawError = '';
+	}
+
 	applyRaw() {
 		try {
 			this.parsed = parsePowerDocument(this.rawDraft);
-			this.rawOpen = false;
-			this.rawError = '';
+			this.closeRaw();
 		} catch (error) {
 			this.rawError = error instanceof Error ? error.message : String(error);
 		}
 	}
 
-	relationshipOptions(kind: Kind, field: string) {
+	relationshipOptions(kind: Kind, field: LinkField) {
 		if (!this.parsed) return [];
+		const target = relationshipField(kind, field)?.relationship.target;
 		const nodes =
-			kind === 'regulator' && field === 'output'
-				? this.parsed.model.rails
-				: [...this.parsed.model.sources, ...this.parsed.model.rails];
+			target === 'rail' ? this.parsed.model.rails : powerNodes(this.parsed.model, 'source', 'rail');
 		return nodes
-			.map((node) => node.name)
+			.map(({ name }) => name)
 			.filter((name, index, names) => Boolean(name) && names.indexOf(name) === index);
 	}
 
 	addNode(kind: Kind) {
 		if (!this.parsed) return;
-		const rails = [...this.parsed.model.sources, ...this.parsed.model.rails].map(
-			(node) => node.name
-		);
+		const rails = powerNodes(this.parsed.model, 'source', 'rail').map(({ name }) => name);
 		const defaults: Record<Kind, Record<string, unknown>> = {
 			source: { name: `SOURCE_${this.parsed.model.sources.length + 1}`, voltage: { nominal: 12 } },
 			rail: { name: `RAIL_${this.parsed.model.rails.length + 1}`, nominal_voltage: 3.3 },
@@ -305,12 +296,7 @@ export class EditorSession {
 						: [current, defaults.source]
 				: [...(Array.isArray(current) ? current : []), defaults[kind]];
 		this.parsed = replaceSection(this.parsed, key, next);
-		const list = {
-			source: this.parsed.model.sources,
-			rail: this.parsed.model.rails,
-			regulator: this.parsed.model.regulators,
-			load: this.parsed.model.loads
-		}[kind];
+		const list = nodesOfKind(this.parsed.model, kind);
 		this.selectNode(list[list.length - 1]);
 	}
 
@@ -326,15 +312,121 @@ export class EditorSession {
 	}
 
 	openFirstIssue() {
-		const first = this.parsed?.model.issues.find((issue) => issue.subject);
+		const first = this.parsed?.model.issues.find(({ subject }) => subject);
 		if (!first?.subject || !this.parsed) return;
-		const [kind, index] = first.subject.split(':');
-		const node = {
-			source: this.parsed.model.sources,
-			regulator: this.parsed.model.regulators,
-			rail: this.parsed.model.rails,
-			load: this.parsed.model.loads
-		}[kind as Kind][Number(index)];
+		const node = findNode(this.parsed.model, first.subject);
 		if (node) this.selectNode(node);
+	}
+
+	startLink(node: PowerNode, field: LinkField) {
+		if ((node.kind !== 'regulator' && node.kind !== 'load') || !relationshipField(node.kind, field))
+			return false;
+		this.selected = null;
+		this.rawOpen = false;
+		this.linkMode = {
+			kind: node.kind,
+			index: node.index,
+			field,
+			name: node.name || `Unnamed ${node.kind}`
+		};
+		this.linkError = '';
+		this.linkFeedback = null;
+		return true;
+	}
+
+	isLinkTarget(node: PowerNode) {
+		if (!this.linkMode || !node.name) return false;
+		const target = relationshipField(this.linkMode.kind, this.linkMode.field)?.relationship.target;
+		return target === 'rail'
+			? node.kind === 'rail'
+			: node.kind === 'source' || node.kind === 'rail';
+	}
+
+	commitLink(target: PowerNode) {
+		if (!this.parsed || !this.linkMode || !this.isLinkTarget(target)) return;
+		const before = this.parsed.source;
+		const next = applyNodeField(
+			this.parsed,
+			this.linkMode.kind,
+			this.linkMode.index,
+			this.linkMode.field,
+			target.name
+		);
+		if (next.model.issues.some(({ code }) => code === 'cycle')) {
+			this.linkError = `Cannot link ${this.linkMode.name} to ${target.name}: this would create a regulator cycle.`;
+			return;
+		}
+		const relationship = this.linkMode.field === 'rail' ? 'supply' : this.linkMode.field;
+		this.parsed = next;
+		this.linkFeedback = {
+			message: `${this.linkMode.name} ${relationship} changed to ${target.name}.`,
+			undoSource: before,
+			linkedSource: next.source
+		};
+		this.linkMode = null;
+		this.linkError = '';
+	}
+
+	undoLink() {
+		if (!this.linkFeedback?.undoSource) return;
+		this.parsed = parsePowerDocument(this.linkFeedback.undoSource);
+		this.linkFeedback = { message: 'Link change undone.' };
+	}
+
+	linkInstruction() {
+		if (!this.linkMode) return '';
+		if (this.linkMode.field === 'input')
+			return `Select a source or rail for ${this.linkMode.name}'s input.`;
+		if (this.linkMode.field === 'output')
+			return `Select a rail for ${this.linkMode.name}'s output.`;
+		return `Select a source or rail to supply ${this.linkMode.name}.`;
+	}
+
+	recoveryDraft(): RecoveryDraft | undefined {
+		if (!this.parsed) return;
+		if (!this.hasUnsavedWork) return;
+		return {
+			filename: this.filename,
+			source: this.parsed.source,
+			baseSource: this.baseSource,
+			handle: this.handle,
+			timestamp: Date.now(),
+			version: RECOVERY_VERSION,
+			raw: this.rawOpen ? { open: true, source: this.rawDraft } : undefined,
+			component:
+				this.selected && this.currentNode
+					? {
+							selected: { ...this.selected },
+							fields: { ...this.componentDraft } as Record<string, string>,
+							sourceBefore: this.sheetSourceBefore
+						}
+					: undefined
+		};
+	}
+
+	restoreRecovery(draft: RecoveryDraft) {
+		this.setDocument(
+			parsePowerDocument(draft.source),
+			draft.filename,
+			draft.handle,
+			draft.baseSource
+		);
+		if (draft.component) {
+			const node = findNode(
+				this.parsed!.model,
+				nodeSubject(draft.component.selected.kind, draft.component.selected.index)
+			);
+			if (node) {
+				this.selected = draft.component.selected;
+				this.componentDraft = draft.component.fields;
+				this.sheetSourceBefore = draft.component.sourceBefore;
+			}
+		}
+		if (draft.raw?.open) {
+			this.selected = null;
+			this.rawDraft = draft.raw.source;
+			this.rawOpen = true;
+			this.rawRevision += 1;
+		}
 	}
 }
