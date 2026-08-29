@@ -1,9 +1,9 @@
 <script lang="ts">
 	import SidebarIcon from 'phosphor-svelte/lib/Sidebar';
-	import { Button } from "$lib/components/ui/button/index.js";
-	import { cn } from "$lib/utils.js";
-	import { useSidebar } from "./context.svelte.js";
-	import type { ComponentProps } from "svelte";
+	import { Button } from '$lib/components/ui/button/index.js';
+	import { cn } from '$lib/utils.js';
+	import { useSidebar } from './context.svelte.js';
+	import type { ComponentProps } from 'svelte';
 
 	let {
 		ref = $bindable(null),
@@ -23,7 +23,7 @@
 	data-slot="sidebar-trigger"
 	variant="ghost"
 	size="icon-sm"
-	class={cn("cn-sidebar-trigger", className)}
+	class={cn('cn-sidebar-trigger', className)}
 	type="button"
 	onclick={(e) => {
 		onclick?.(e);
@@ -31,6 +31,6 @@
 	}}
 	{...restProps}
 >
-	<SidebarIcon  />
+	<SidebarIcon />
 	<span class="sr-only">Toggle Sidebar</span>
 </Button>

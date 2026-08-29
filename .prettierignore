@@ -7,3 +7,6 @@ bun.lockb
 
 # Miscellaneous
 /static/
+/node_modules/
+/read_only/
+/src/lib/components/ui/

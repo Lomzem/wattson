@@ -9,7 +9,6 @@
 		Plus,
 		Warning,
 		DotsThree,
-		Circuitry,
 		Moon,
 		Sun
 	} from 'phosphor-svelte';
@@ -18,13 +17,18 @@
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import { Textarea } from '$lib/components/ui/textarea';
+	import * as Card from '$lib/components/ui/card';
+	import * as ContextMenu from '$lib/components/ui/context-menu';
+	import * as Dialog from '$lib/components/ui/dialog';
+	import * as Kbd from '$lib/components/ui/kbd';
 	import * as Sheet from '$lib/components/ui/sheet';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import * as AlertDialog from '$lib/components/ui/alert-dialog';
+	import * as Tooltip from '$lib/components/ui/tooltip';
 	import {
+		applyNodeField,
 		canonicalDocument,
 		parsePowerDocument,
-		patchScalar,
 		replaceSection,
 		sectionData,
 		type Kind,
@@ -44,10 +48,14 @@
 	let baseSource = $state('');
 	let handle = $state<FileSystemFileHandle | undefined>();
 	let selected = $state<{ kind: Kind; index: number } | null>(null);
+	let componentDraft = $state<Record<string, string>>({});
+	let sheetSourceBefore = $state('');
+	let cancelPending = $state(false);
 	let rawOpen = $state(false);
 	let rawDraft = $state('');
 	let rawError = $state('');
 	let rawRevision = $state(0);
+	let shortcutsOpen = $state(false);
 	let conflictOpen = $state(false);
 	let recovery = $state<RecoveryDraft | undefined>();
 	let recoveryOpen = $state(false);
@@ -69,14 +77,65 @@
 		};
 		return map[selected.kind][selected.index];
 	});
-	const currentIssues = $derived(
-		parsed?.model.issues.filter(
+	const previewState = $derived.by(() => {
+		if (!parsed || !selected || !currentNode)
+			return { document: parsed, error: '', hasNewError: false };
+		let document = parsed;
+		try {
+			for (const field of fields[currentNode.kind]) {
+				if (field.key === 'name') continue;
+				const raw = componentDraft[field.key] ?? '';
+				if (raw === String(nodeValue(currentNode, field.key))) continue;
+				document = applyNodeField(
+					document,
+					currentNode.kind,
+					currentNode.index,
+					field.key,
+					raw,
+					field.type === 'number'
+				);
+			}
+			const existing = new Set(parsed.model.issues.map((issue) => issue.message));
+			return {
+				document,
+				error: '',
+				hasNewError: document.model.issues.some(
+					(issue) => issue.severity === 'error' && !existing.has(issue.message)
+				)
+			};
+		} catch (error) {
+			return {
+				document,
+				error: error instanceof Error ? error.message : String(error),
+				hasNewError: true
+			};
+		}
+	});
+	const currentIssues = $derived([
+		...(previewState.document?.model.issues.filter(
 			(issue) =>
 				!currentNode ||
 				!issue.subject ||
 				issue.subject === `${currentNode.kind}:${currentNode.index}`
-		) ?? []
+		) ?? []),
+		...(previewState.error ? [{ severity: 'error' as const, message: previewState.error }] : [])
+	]);
+	const validationIssueLabel = $derived(
+		parsed?.model.issues.length === 1
+			? '1 validation issue'
+			: `${parsed?.model.issues.length ?? 0} validation issues`
 	);
+	const shortcutRows = $derived([
+		{ action: 'Add Source', keys: ['S'] },
+		{ action: 'Add Regulator', keys: ['E'] },
+		{ action: 'Add Rail', keys: ['A'] },
+		{ action: 'Add Load', keys: ['L'] },
+		{ action: 'Open File', keys: ['Ctrl', 'O'] },
+		{ action: 'Save / Download', keys: ['Ctrl', 'S'] },
+		...(directAccess ? [{ action: 'Save As', keys: ['Ctrl', 'Shift', 'S'] }] : []),
+		{ action: 'New YAML', keys: ['Ctrl', 'N'] },
+		{ action: 'View Raw YAML', keys: ['Ctrl', 'Shift', 'Y'] }
+	]);
 	const topology = $derived.by(() => {
 		if (!parsed) return { conversions: [], direct: [], unlinked: [] };
 		const model = parsed.model;
@@ -127,31 +186,47 @@
 		};
 	});
 
-	const fields: Record<Kind, { key: string; label: string; type?: string }[]> = {
+	type Field = {
+		key: string;
+		label: string;
+		type?: 'number';
+		step?: string;
+		min?: string;
+		max?: string;
+	};
+
+	const fields: Record<Kind, Field[]> = {
 		source: [
 			{ key: 'name', label: 'Name' },
-			{ key: 'nominal', label: 'Nominal voltage', type: 'number' },
-			{ key: 'min', label: 'Minimum voltage', type: 'number' },
-			{ key: 'max', label: 'Maximum voltage', type: 'number' }
+			{ key: 'nominal', label: 'Nominal voltage', type: 'number', step: '0.1', min: '0' },
+			{ key: 'min', label: 'Minimum voltage', type: 'number', step: '0.1', min: '0' },
+			{ key: 'max', label: 'Maximum voltage', type: 'number', step: '0.1', min: '0' }
 		],
 		rail: [
 			{ key: 'name', label: 'Name' },
-			{ key: 'nominal', label: 'Nominal voltage', type: 'number' },
-			{ key: 'min', label: 'Minimum voltage', type: 'number' },
-			{ key: 'max', label: 'Maximum voltage', type: 'number' }
+			{ key: 'nominal', label: 'Nominal voltage', type: 'number', step: '0.1', min: '0' },
+			{ key: 'min', label: 'Minimum voltage', type: 'number', step: '0.1', min: '0' },
+			{ key: 'max', label: 'Maximum voltage', type: 'number', step: '0.1', min: '0' }
 		],
 		regulator: [
 			{ key: 'name', label: 'Name' },
 			{ key: 'input', label: 'Input rail' },
 			{ key: 'output', label: 'Output rail' },
-			{ key: 'efficiency', label: 'Efficiency', type: 'number' }
+			{
+				key: 'efficiency',
+				label: 'Efficiency',
+				type: 'number',
+				step: '0.01',
+				min: '0',
+				max: '1'
+			}
 		],
 		load: [
 			{ key: 'name', label: 'Name' },
 			{ key: 'rail', label: 'Rail' },
-			{ key: 'quantity', label: 'Quantity', type: 'number' },
-			{ key: 'typical', label: 'Typical current', type: 'number' },
-			{ key: 'maximum', label: 'Maximum current', type: 'number' }
+			{ key: 'quantity', label: 'Quantity', type: 'number', step: '1', min: '0' },
+			{ key: 'typical', label: 'Typical current', type: 'number', step: '0.0001', min: '0' },
+			{ key: 'maximum', label: 'Maximum current', type: 'number', step: '0.0001', min: '0' }
 		]
 	};
 
@@ -312,27 +387,165 @@
 		return (data[key] ?? '') as string | number;
 	}
 
+	function compactNumber(value: unknown) {
+		const number = Number(value);
+		return Number.isFinite(number) ? String(number) : String(value);
+	}
+
+	function currentValue(value: unknown) {
+		const number = Number(value);
+		if (!Number.isFinite(number)) return `${value} A`;
+		return number !== 0 && Math.abs(number) < 1
+			? `${compactNumber(number * 1000)} mA`
+			: `${compactNumber(number)} A`;
+	}
+
+	type NodeMetric = {
+		key: string;
+		label: string;
+		value: string;
+		primary?: boolean;
+	};
+
+	function nodeMetrics(node: PowerNode): { layout: Kind; items: NodeMetric[] } {
+		const data = node.data;
+		if (node.kind === 'source') {
+			const voltage = (data.voltage ?? {}) as Record<string, unknown>;
+			return {
+				layout: node.kind,
+				items: [
+					{
+						key: 'nominal',
+						label: 'Nominal',
+						value: voltage.nominal ?? data.nominal_voltage,
+						primary: true
+					},
+					{ key: 'min', label: 'Min', value: voltage.min },
+					{ key: 'max', label: 'Max', value: voltage.max }
+				]
+					.filter((metric) => metric.value !== undefined)
+					.map((metric) => ({ ...metric, value: `${compactNumber(metric.value)} V` }))
+			};
+		}
+		if (node.kind === 'rail') {
+			return {
+				layout: node.kind,
+				items: [
+					{
+						key: 'nominal',
+						label: 'Nominal',
+						value: data.nominal_voltage ?? data.voltage,
+						primary: true
+					},
+					{ key: 'min', label: 'Min', value: data.min_voltage },
+					{ key: 'max', label: 'Max', value: data.max_voltage }
+				]
+					.filter((metric) => metric.value !== undefined)
+					.map((metric) => ({ ...metric, value: `${compactNumber(metric.value)} V` }))
+			};
+		}
+		if (node.kind === 'regulator') {
+			return {
+				layout: node.kind,
+				items: [
+					{
+						key: 'efficiency',
+						label: 'Efficiency',
+						value:
+							data.efficiency === undefined
+								? undefined
+								: `${compactNumber(Number(data.efficiency) * 100)}%`
+					},
+					{
+						key: 'current-limit',
+						label: 'Current limit',
+						value:
+							data.max_output_current === undefined
+								? undefined
+								: `${compactNumber(data.max_output_current)} A`
+					}
+				].filter((metric): metric is NodeMetric => metric.value !== undefined)
+			};
+		}
+		const current = (data.current ?? {}) as Record<string, unknown>;
+		return {
+			layout: node.kind,
+			items: [
+				{
+					key: 'quantity',
+					label: 'Quantity',
+					value: data.quantity === undefined ? undefined : compactNumber(data.quantity),
+					primary: true
+				},
+				...Object.entries(current).map(([mode, value]) => ({
+					key: mode,
+					label: `${mode.charAt(0).toUpperCase()}${mode.slice(1)}`,
+					value: currentValue(value)
+				}))
+			].filter((metric): metric is NodeMetric => metric.value !== undefined)
+		};
+	}
+
 	function editField(node: PowerNode | undefined, key: string, raw: string, numeric: boolean) {
 		if (!parsed || !node) return;
-		const value = numeric ? Number(raw) : raw;
-		if (nodeValue(node, key) === value || (numeric && raw === '')) return;
 		try {
-			parsed = patchScalar(parsed, node.paths[key], value);
+			const existing = new Set(parsed.model.issues.map((issue) => issue.message));
+			const next = applyNodeField(parsed, node.kind, node.index, key, raw, numeric);
+			if (
+				numeric &&
+				next.model.issues.some(
+					(issue) => issue.severity === 'error' && !existing.has(issue.message)
+				)
+			)
+				return;
+			parsed = next;
 		} catch {
-			const section = node.kind === 'source' ? (node.paths.name[0] as string) : `${node.kind}s`;
-			const content = structuredClone(sectionData(parsed, section));
-			const item = (Array.isArray(content) ? content[node.index] : content) as Record<
-				string,
-				unknown
-			>;
-			if (!item) return;
-			const path = node.paths[key].slice(Array.isArray(content) ? 2 : 1);
-			let cursor = item;
-			for (const part of path.slice(0, -1))
-				cursor = (cursor[part] ??= {}) as Record<string, unknown>;
-			cursor[path.at(-1)!] = value;
-			parsed = replaceSection(parsed, section, content);
+			// Keep the draft visible without replacing the valid source.
 		}
+	}
+
+	function inputComponentField(event: Event) {
+		const input = event.currentTarget as HTMLInputElement;
+		const key = input.id.startsWith('field-') ? input.id.slice(6) : '';
+		if (!key) return;
+		componentDraft[key] = input.value;
+		if (key === 'name') editField(currentNode, key, input.value, false);
+	}
+
+	function blurComponentField(event: FocusEvent) {
+		const input = event.currentTarget as HTMLInputElement;
+		const key = input.id.startsWith('field-') ? input.id.slice(6) : '';
+		if (
+			key &&
+			key !== 'name' &&
+			!cancelPending &&
+			!previewState.error &&
+			(input.type !== 'number' || !previewState.hasNewError) &&
+			previewState.document
+		)
+			parsed = previewState.document;
+	}
+
+	function closeComponentSheet() {
+		componentDraft = {};
+		cancelPending = false;
+		selected = null;
+	}
+
+	function commitComponentDraft() {
+		if (!currentNode || previewState.hasNewError || !previewState.document) return;
+		parsed = previewState.document;
+		closeComponentSheet();
+	}
+
+	function submitComponentEdit(event: SubmitEvent) {
+		event.preventDefault();
+		commitComponentDraft();
+	}
+
+	function cancelComponentEdit() {
+		if (parsed && sheetSourceBefore) parsed = parsePowerDocument(sheetSourceBefore);
+		closeComponentSheet();
 	}
 
 	function addNode(kind: Kind) {
@@ -378,12 +591,11 @@
 					: kind === 'regulator'
 						? parsed.model.regulators
 						: parsed.model.loads;
-		selected = { kind, index: list.length - 1 };
+		selectNode(list[list.length - 1]);
 	}
 
-	function deleteSelected() {
-		if (!parsed || !currentNode) return;
-		const node = currentNode;
+	function deleteNode(node: PowerNode) {
+		if (!parsed) return;
 		const key = node.kind === 'source' ? (node.paths.name[0] as string) : `${node.kind}s`;
 		const current = structuredClone(sectionData(parsed, key));
 		const next = Array.isArray(current)
@@ -391,6 +603,33 @@
 			: undefined;
 		parsed = replaceSection(parsed, key, next ?? []);
 		selected = null;
+	}
+
+	function openFirstIssue() {
+		const first = parsed?.model.issues.find((issue) => issue.subject);
+		if (!first?.subject || !parsed) return;
+		const [kind, index] = first.subject.split(':');
+		const node = {
+			source: parsed.model.sources,
+			regulator: parsed.model.regulators,
+			rail: parsed.model.rails,
+			load: parsed.model.loads
+		}[kind as Kind][Number(index)];
+		if (node) selectNode(node);
+	}
+
+	function canUseTopologyShortcut() {
+		if (!parsed || typeof document === 'undefined') return false;
+		const active = document.activeElement;
+		if (
+			active?.closest(
+				'input, textarea, select, [contenteditable="true"], [contenteditable="plaintext-only"], [contenteditable=""]'
+			)
+		)
+			return false;
+		return !document.querySelector(
+			'[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"], [role="menu"][data-state="open"]'
+		);
 	}
 
 	async function clearRecovery() {
@@ -416,6 +655,11 @@
 
 	function selectNode(node: PowerNode) {
 		rawOpen = false;
+		sheetSourceBefore = parsed?.source ?? '';
+		cancelPending = false;
+		componentDraft = Object.fromEntries(
+			fields[node.kind].map((field) => [field.key, String(nodeValue(node, field.key))])
+		);
 		selected = { kind: node.kind, index: node.index };
 	}
 
@@ -424,6 +668,19 @@
 	createHotkey('Mod+Shift+S', saveAsCommand, { preventDefault: true, ignoreInputs: true });
 	createHotkey('Mod+N', newCommand, { preventDefault: true, ignoreInputs: true });
 	createHotkey('Mod+Shift+Y', openRaw, { preventDefault: true, ignoreInputs: true });
+	for (const [hotkey, kind] of [
+		['S', 'source'],
+		['E', 'regulator'],
+		['A', 'rail'],
+		['L', 'load']
+	] as const)
+		createHotkey(
+			hotkey,
+			() => {
+				if (canUseTopologyShortcut()) addNode(kind);
+			},
+			() => ({ enabled: Boolean(parsed), ignoreInputs: true })
+		);
 
 	$effect(() => {
 		if (!dirty) {
@@ -464,12 +721,7 @@
 	});
 </script>
 
-<svelte:head
-	><title>Wattson | Powerman YAML editor</title><meta
-		name="description"
-		content="A file-first Powerman 5000 YAML editor."
-	/></svelte:head
->
+<svelte:head><title>Wattson | Powerman YAML editor</title></svelte:head>
 
 <input
 	class="sr-only"
@@ -486,22 +738,46 @@
 />
 
 {#snippet topologyNode(node: PowerNode, context: string)}
-	<button
-		class="node topology-node"
-		class:node-issue={parsed?.model.issues.some(
-			(issue) => issue.subject === `${node.kind}:${node.index}`
-		)}
-		aria-label={`${node.kind} ${node.name || 'unnamed'}, ${context}`}
-		onclick={() => selectNode(node)}
-	>
-		<span class="min-w-0">
-			<span class="node-kind">{node.kind}</span>
-			<span class="block truncate text-sm">{node.name || `Unnamed ${node.kind}`}</span>
-		</span>
-		{#if parsed?.model.issues.some((issue) => issue.subject === `${node.kind}:${node.index}`)}
-			<Warning class="size-4 shrink-0" /><span class="sr-only">Has validation issues</span>
-		{/if}
-	</button>
+	{@const metrics = nodeMetrics(node)}
+	<ContextMenu.Root>
+		<ContextMenu.Trigger>
+			{#snippet child({ props })}
+				<button
+					{...props}
+					class="node topology-node"
+					class:node-issue={parsed?.model.issues.some(
+						(issue) => issue.subject === `${node.kind}:${node.index}`
+					)}
+					aria-label={`${node.kind} ${node.name || 'unnamed'}, ${context}${metrics.items.length ? `, ${metrics.items.map((metric) => `${metric.label} ${metric.value}`).join(', ')}` : ''}`}
+					onclick={() => selectNode(node)}
+				>
+					<span class="node-content">
+						<span class="node-kind">{node.kind}</span>
+						<span class="node-name">{node.name || `Unnamed ${node.kind}`}</span>
+						{#if metrics.items.length}<dl class={`node-metrics node-metrics-${metrics.layout}`}>
+								{#each metrics.items as metric (metric.key)}<div
+										class="node-metric"
+										class:node-metric-primary={metric.primary}
+										data-metric={metric.key}
+									>
+										<dt>{metric.label}</dt>
+										<dd>{metric.value}</dd>
+									</div>{/each}
+							</dl>{/if}
+					</span>
+					{#if parsed?.model.issues.some((issue) => issue.subject === `${node.kind}:${node.index}`)}
+						<Warning class="size-4 shrink-0" /><span class="sr-only">Has validation issues</span>
+					{/if}
+				</button>
+			{/snippet}
+		</ContextMenu.Trigger>
+		<ContextMenu.Content>
+			<ContextMenu.Item onclick={() => selectNode(node)}>Edit</ContextMenu.Item>
+			<ContextMenu.Item variant="destructive" onclick={() => deleteNode(node)}
+				>Delete</ContextMenu.Item
+			>
+		</ContextMenu.Content>
+	</ContextMenu.Root>
 {/snippet}
 
 {#snippet themeToggle()}
@@ -517,7 +793,7 @@
 
 {#if !parsed}
 	<main
-		class="grid min-h-screen place-items-center p-6"
+		class="grid min-h-screen place-items-center bg-muted/30 p-6"
 		ondragover={(event) => event.preventDefault()}
 		ondrop={(event) => {
 			event.preventDefault();
@@ -525,28 +801,23 @@
 			if (file) void openFile(file);
 		}}
 	>
-		<section class="w-full max-w-md" aria-labelledby="product-name">
-			<div class="mb-5 flex items-center gap-3">
-				<Circuitry class="size-7 text-primary" />
-				<div>
-					<h1 id="product-name" class="text-2xl font-semibold">Wattson</h1>
-					<p class="text-sm text-muted-foreground">Powerman 5000 YAML, without the ceremony.</p>
-				</div>
-			</div>
-			<div class="flex gap-2">
+		<Card.Root class="w-full max-w-md text-center" aria-labelledby="product-name">
+			<Card.Header class="items-center">
+				<h1 id="product-name" class="text-2xl font-semibold">Wattson</h1>
+			</Card.Header>
+			<Card.Content class="flex flex-wrap justify-center gap-2">
 				<Button onclick={openCommand}><FileArrowUp /> Open YAML</Button><Button
 					variant="outline"
 					onclick={newCommand}>New YAML</Button
 				>
-			</div>
-			<p class="mt-4 text-xs text-muted-foreground">Or drop one .yaml or .yml file anywhere.</p>
-		</section>
+			</Card.Content>
+		</Card.Root>
 		<div class="absolute top-4 right-4 sm:top-6 sm:right-6">{@render themeToggle()}</div>
 	</main>
 {:else}
-	<div class="min-h-screen bg-background">
+	<div class="min-h-screen bg-muted/30" data-testid="app-shell">
 		<header
-			class="sticky top-0 z-20 flex min-h-14 items-center gap-2 border-b bg-background/95 px-3 backdrop-blur sm:px-5"
+			class="sticky top-0 z-20 flex min-h-14 items-center gap-2 border-b bg-card/95 px-3 backdrop-blur sm:px-5"
 		>
 			<div class="mr-auto min-w-0">
 				<div class="flex items-center gap-2">
@@ -555,20 +826,24 @@
 						>{/if}
 				</div>
 			</div>
-			{#if parsed.model.issues.length}<Button
-					variant="ghost"
-					size="sm"
-					onclick={() => {
-						const first = parsed?.model.issues.find((issue) => issue.subject);
-						if (first?.subject) {
-							const [kind, index] = first.subject.split(':');
-							selected = { kind: kind as Kind, index: Number(index) };
-						}
-					}}
-					><Warning />
-					{parsed.model.issues.length}<span class="sr-only">validation issues</span></Button
-				>{/if}
-			<Button variant="outline" size="sm" onclick={openCommand}>Open</Button>
+			{#if parsed.model.issues.length}<Tooltip.Provider>
+					<Tooltip.Root>
+						<Tooltip.Trigger>
+							{#snippet child({ props })}
+								<Button
+									{...props}
+									variant="ghost"
+									size="sm"
+									aria-label={validationIssueLabel}
+									onclick={openFirstIssue}
+									><Warning />
+									{parsed!.model.issues.length}</Button
+								>
+							{/snippet}
+						</Tooltip.Trigger>
+						<Tooltip.Content role="tooltip">{validationIssueLabel}</Tooltip.Content>
+					</Tooltip.Root>
+				</Tooltip.Provider>{/if}
 			<Button size="sm" onclick={saveCommand}
 				>{#if handle}Save{:else}<DownloadSimple /> Download{/if}</Button
 			>
@@ -581,217 +856,266 @@
 						>
 					{/snippet}
 				</DropdownMenu.Trigger>
-				<DropdownMenu.Content align="end">
-					<DropdownMenu.Item onclick={saveAsCommand}
-						>{directAccess ? 'Save As' : 'Download'}</DropdownMenu.Item
+				<DropdownMenu.Content align="end" class="min-w-44">
+					<DropdownMenu.Item class="whitespace-nowrap" onclick={openCommand}
+						>Open File</DropdownMenu.Item
 					>
-					{#if handle}<DropdownMenu.Item onclick={download}>Download a copy</DropdownMenu.Item>{/if}
-					<DropdownMenu.Item onclick={openRaw}>Raw YAML</DropdownMenu.Item>
+					{#if directAccess}<DropdownMenu.Item class="whitespace-nowrap" onclick={saveAsCommand}
+							>Save As</DropdownMenu.Item
+						>{/if}
 					<DropdownMenu.Separator />
-					<DropdownMenu.Item onclick={newCommand}>New</DropdownMenu.Item>
-					<DropdownMenu.Item onclick={clearRecovery}>Clear recovery</DropdownMenu.Item>
+					<DropdownMenu.Item class="whitespace-nowrap" onclick={openRaw}
+						>View Raw YAML</DropdownMenu.Item
+					>
+					<DropdownMenu.Item class="whitespace-nowrap" onclick={() => (shortcutsOpen = true)}
+						>Keyboard Shortcuts</DropdownMenu.Item
+					>
+					<DropdownMenu.Separator />
+					<DropdownMenu.Item class="whitespace-nowrap" onclick={newCommand}
+						>New YAML</DropdownMenu.Item
+					>
 				</DropdownMenu.Content>
 			</DropdownMenu.Root>
 		</header>
 
 		<main class="mx-auto max-w-[1500px] px-4 py-8 sm:px-8 sm:py-12">
-			<div class="mb-6 flex justify-end">
-				<DropdownMenu.Root>
-					<DropdownMenu.Trigger>
-						{#snippet child({ props })}
-							<Button {...props} size="sm"><Plus /> Add <CaretDown /></Button>
-						{/snippet}
-					</DropdownMenu.Trigger>
-					<DropdownMenu.Content align="end"
-						>{#each ['source', 'regulator', 'rail', 'load'] as kind (kind)}<DropdownMenu.Item
-								onclick={() => addNode(kind as Kind)}>Add {kind}</DropdownMenu.Item
-							>{/each}</DropdownMenu.Content
+			<Card.Root>
+				<Card.Header class="border-b">
+					<Card.Title><h1>Topology</h1></Card.Title>
+					<Card.Action
+						><DropdownMenu.Root>
+							<DropdownMenu.Trigger>
+								{#snippet child({ props })}
+									<Button {...props} size="sm"><Plus /> Add <CaretDown /></Button>
+								{/snippet}
+							</DropdownMenu.Trigger>
+							<DropdownMenu.Content align="end" class="min-w-40"
+								>{#each ['source', 'regulator', 'rail', 'load'] as kind (kind)}<DropdownMenu.Item
+										onclick={() => addNode(kind as Kind)}
+										><span class="whitespace-nowrap">Add {kind}</span><Kbd.Root class="ml-auto"
+											>{({ source: 'S', regulator: 'E', rail: 'A', load: 'L' } as const)[
+												kind
+											]}</Kbd.Root
+										></DropdownMenu.Item
+									>{/each}</DropdownMenu.Content
+							>
+						</DropdownMenu.Root></Card.Action
 					>
-				</DropdownMenu.Root>
-			</div>
-			<nav aria-label="Topology" class="topology">
-				{#if topology.conversions.length}
-					<section aria-labelledby="conversion-paths">
-						<div class="topology-heading">
-							<h2 id="conversion-paths">Conversion paths</h2>
-							<span>{topology.conversions.length}</span>
-						</div>
-						<ol class="power-paths">
-							{#each topology.conversions as conversion (`regulator:${conversion.regulator.index}`)}
-								<li class="power-path" data-path={conversion.regulator.name}>
-									<div class="path-stage">
-										<span class="stage-label">Input rails</span>
-										<div class="branch-stack input-branches">
-											{#each conversion.inputs as inputReference (inputReference.port)}
-												<div class="branch-item">
-													<span class="port-label">{inputReference.port}</span>
-													{#if inputReference.node}
-														{@render topologyNode(
-															inputReference.node,
-															`${conversion.regulator.name} input`
-														)}
-													{:else}
-														<span class="missing-reference"
-															>{inputReference.name || 'Missing input'}</span
-														>
-													{/if}
+				</Card.Header>
+				<Card.Content>
+					<nav aria-label="Topology" class="topology">
+						{#if topology.conversions.length}
+							<section aria-labelledby="conversion-paths">
+								<div class="topology-heading">
+									<h2 id="conversion-paths">Conversion paths</h2>
+									<span>{topology.conversions.length}</span>
+								</div>
+								<ol class="power-paths">
+									{#each topology.conversions as conversion (`regulator:${conversion.regulator.index}`)}
+										<li class="power-path" data-path={conversion.regulator.name}>
+											<div class="path-stage">
+												<span class="stage-label">Input rails</span>
+												<div class="branch-stack input-branches">
+													{#each conversion.inputs as inputReference (inputReference.port)}
+														<div class="branch-item">
+															<span class="port-label">{inputReference.port}</span>
+															{#if inputReference.node}
+																{@render topologyNode(
+																	inputReference.node,
+																	`${conversion.regulator.name} input`
+																)}
+															{:else}
+																<span class="missing-reference"
+																	>{inputReference.name || 'Missing input'}</span
+																>
+															{/if}
+														</div>
+													{/each}
 												</div>
-											{/each}
-										</div>
-									</div>
-									<span class="path-link" aria-hidden="true"></span>
-									<div class="path-stage">
-										<span class="stage-label">Regulator</span>
-										{@render topologyNode(conversion.regulator, 'conversion')}
-									</div>
-									<span class="path-link" aria-hidden="true"></span>
-									<div class="path-stage">
-										<span class="stage-label">Output rail</span>
-										{#if conversion.output}
-											{@render topologyNode(
-												conversion.output,
-												`${conversion.regulator.name} output`
-											)}
-										{:else}
-											<span class="missing-reference"
-												>{conversion.outputName || 'Missing output'}</span
-											>
-										{/if}
-									</div>
-									<span class="path-link" aria-hidden="true"></span>
-									<div class="path-stage">
-										<span class="stage-label">Connected loads</span>
-										{#if conversion.loads.length}
-											<div class="branch-stack load-branches">
-												{#each conversion.loads as load (`load:${load.index}`)}
-													<div class="branch-item">
-														{@render topologyNode(load, `${conversion.outputName} load`)}
-													</div>
-												{/each}
 											</div>
-										{:else}
-											<span class="empty-branch">No loads</span>
-										{/if}
-									</div>
-								</li>
-							{/each}
-						</ol>
-					</section>
-				{/if}
+											<span class="path-link" aria-hidden="true"></span>
+											<div class="path-stage">
+												<span class="stage-label">Regulator</span>
+												{@render topologyNode(conversion.regulator, 'conversion')}
+											</div>
+											<span class="path-link" aria-hidden="true"></span>
+											<div class="path-stage">
+												<span class="stage-label">Output rail</span>
+												{#if conversion.output}
+													{@render topologyNode(
+														conversion.output,
+														`${conversion.regulator.name} output`
+													)}
+												{:else}
+													<span class="missing-reference"
+														>{conversion.outputName || 'Missing output'}</span
+													>
+												{/if}
+											</div>
+											<span class="path-link" aria-hidden="true"></span>
+											<div class="path-stage">
+												<span class="stage-label">Connected loads</span>
+												{#if conversion.loads.length}
+													<div class="branch-stack load-branches">
+														{#each conversion.loads as load (`load:${load.index}`)}
+															<div class="branch-item">
+																{@render topologyNode(load, `${conversion.outputName} load`)}
+															</div>
+														{/each}
+													</div>
+												{:else}
+													<span class="empty-branch">No loads</span>
+												{/if}
+											</div>
+										</li>
+									{/each}
+								</ol>
+							</section>
+						{/if}
 
-				{#if topology.direct.length}
-					<section class="topology-section" aria-labelledby="direct-branches">
-						<div class="topology-heading">
-							<h2 id="direct-branches">Direct rail branches</h2>
-							<span>{topology.direct.length}</span>
-						</div>
-						<ul class="direct-paths">
-							{#each topology.direct as branch (`direct:${branch.rail.kind}:${branch.rail.index}`)}
-								<li class="direct-path">
-									<div class="path-stage">
-										<span class="stage-label">Source or rail</span>{@render topologyNode(
-											branch.rail,
-											'direct feed'
-										)}
-									</div>
-									<span class="path-link" aria-hidden="true"></span>
-									<div class="path-stage">
-										<span class="stage-label">Connected loads</span>
-										<div class="branch-stack load-branches">
-											{#each branch.loads as load (`load:${load.index}`)}<div class="branch-item">
-													{@render topologyNode(load, `${branch.rail.name} load`)}
-												</div>{/each}
-										</div>
-									</div>
-								</li>
-							{/each}
-						</ul>
-					</section>
-				{/if}
+						{#if topology.direct.length}
+							<section class="topology-section" aria-labelledby="direct-branches">
+								<div class="topology-heading">
+									<h2 id="direct-branches">Direct rail branches</h2>
+									<span>{topology.direct.length}</span>
+								</div>
+								<ul class="direct-paths">
+									{#each topology.direct as branch (`direct:${branch.rail.kind}:${branch.rail.index}`)}
+										<li class="direct-path">
+											<div class="path-stage">
+												<span class="stage-label">Source or rail</span>{@render topologyNode(
+													branch.rail,
+													'direct feed'
+												)}
+											</div>
+											<span class="path-link" aria-hidden="true"></span>
+											<div class="path-stage">
+												<span class="stage-label">Connected loads</span>
+												<div class="branch-stack load-branches">
+													{#each branch.loads as load (`load:${load.index}`)}<div
+															class="branch-item"
+														>
+															{@render topologyNode(load, `${branch.rail.name} load`)}
+														</div>{/each}
+												</div>
+											</div>
+										</li>
+									{/each}
+								</ul>
+							</section>
+						{/if}
 
-				{#if topology.unlinked.length}
-					<section class="topology-section" aria-labelledby="unlinked-entities">
-						<div class="topology-heading">
-							<h2 id="unlinked-entities">Unlinked entities</h2>
-							<span>{topology.unlinked.length}</span>
-						</div>
-						<ul class="unlinked-list">
-							{#each topology.unlinked as node (`${node.kind}:${node.index}`)}<li>
-									{@render topologyNode(node, 'unlinked')}
-								</li>{/each}
-						</ul>
-					</section>
-				{/if}
-			</nav>
-			{#if !parsed.model.sources.length && !parsed.model.regulators.length && !parsed.model.rails.length && !parsed.model.loads.length}<p
-					class="py-16 text-center text-sm text-muted-foreground"
-				>
-					Add the first component to begin the topology.
-				</p>{/if}
+						{#if topology.unlinked.length}
+							<section class="topology-section" aria-labelledby="unlinked-entities">
+								<div class="topology-heading">
+									<h2 id="unlinked-entities">Unlinked entities</h2>
+									<span>{topology.unlinked.length}</span>
+								</div>
+								<ul class="unlinked-list">
+									{#each topology.unlinked as node (`${node.kind}:${node.index}`)}<li>
+											{@render topologyNode(node, 'unlinked')}
+										</li>{/each}
+								</ul>
+							</section>
+						{/if}
+					</nav>
+				</Card.Content>
+			</Card.Root>
 		</main>
 	</div>
 {/if}
 
+<Dialog.Root bind:open={shortcutsOpen}>
+	<Dialog.Content class="sm:max-w-md">
+		<Dialog.Header>
+			<Dialog.Title>Keyboard Shortcuts</Dialog.Title>
+		</Dialog.Header>
+		<dl class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-6 gap-y-2">
+			{#each shortcutRows as shortcut (shortcut.action)}
+				<dt>{shortcut.action}</dt>
+				<dd>
+					<Kbd.Group>
+						{#each shortcut.keys as key, index (`${shortcut.action}:${key}:${index}`)}
+							<Kbd.Root>{key}</Kbd.Root>{#if index < shortcut.keys.length - 1}<span
+									aria-hidden="true">+</span
+								>{/if}
+						{/each}
+					</Kbd.Group>
+				</dd>
+			{/each}
+		</dl>
+	</Dialog.Content>
+</Dialog.Root>
+
 <Sheet.Root
 	open={Boolean(selected)}
 	onOpenChange={(open) => {
-		if (!open) selected = null;
+		if (!open) closeComponentSheet();
 	}}
 >
 	<Sheet.Content class="overflow-y-auto sm:max-w-md">
 		{#if currentNode}
 			{@const editedNode = currentNode}
-			<Sheet.Header
-				><Sheet.Title>{currentNode.name || `Unnamed ${currentNode.kind}`}</Sheet.Title
-				><Sheet.Description class="capitalize">{currentNode.kind} properties</Sheet.Description
-				></Sheet.Header
-			>
-			<div class="space-y-4 px-4">
-				{#each fields[currentNode.kind] as field (field.key)}<div class="space-y-1.5">
-						<Label for={`field-${field.key}`}>{field.label}</Label><Input
-							id={`field-${field.key}`}
-							type={field.type ?? 'text'}
-							step="any"
-							value={nodeValue(currentNode, field.key)}
-							onblur={(event) =>
-								editField(
-									editedNode,
-									field.key,
-									event.currentTarget.value,
-									field.type === 'number'
-								)}
-						/>
-					</div>{/each}
-			</div>
-			{#if currentIssues.length}<div class="mx-4 border-l-2 border-destructive pl-3">
-					<h3 class="text-sm font-medium">Issues</h3>
-					<ul class="mt-2 space-y-2 text-sm">
-						{#each currentIssues as issue (issue.message)}<li>
-								<span class="font-medium capitalize">{issue.severity}:</span>
-								{issue.message}
-							</li>{/each}
-					</ul>
-				</div>{/if}
-			<Sheet.Footer
-				><Button variant="destructive" onclick={deleteSelected}>Delete {currentNode.kind}</Button
-				></Sheet.Footer
-			>
+			<form class="contents" onsubmit={submitComponentEdit}>
+				<Sheet.Header class="pr-14">
+					<Sheet.Title class="wrap-anywhere"
+						>{currentNode.name || `Unnamed ${currentNode.kind}`}</Sheet.Title
+					>
+				</Sheet.Header>
+				<div class="space-y-4 px-4">
+					{#each fields[currentNode.kind] as field (field.key)}<div class="space-y-1.5">
+							<Label for={`field-${field.key}`}>{field.label}</Label><Input
+								id={`field-${field.key}`}
+								type={field.type ?? 'text'}
+								step={field.step}
+								min={field.min}
+								max={field.max}
+								value={componentDraft[field.key] ?? ''}
+								oninput={inputComponentField}
+								onblur={blurComponentField}
+							/>
+						</div>{/each}
+				</div>
+				{#if currentIssues.length}<div class="mx-4 border-l-2 border-destructive pl-3">
+						<h3 class="text-sm font-medium">Issues</h3>
+						<ul class="mt-2 space-y-2 text-sm">
+							{#each currentIssues as issue (issue.message)}<li>
+									<span class="font-medium capitalize">{issue.severity}:</span>
+									{issue.message}
+								</li>{/each}
+						</ul>
+					</div>{/if}
+				<Sheet.Footer class="border-t sm:flex-row sm:items-center">
+					<Button class="order-3" type="submit">Save</Button>
+					<Button
+						class="order-2"
+						type="button"
+						variant="outline"
+						onpointerdown={() => (cancelPending = true)}
+						onclick={cancelComponentEdit}>Cancel</Button
+					>
+					<Button
+						class="order-1 mt-2 text-destructive sm:mt-0 sm:mr-auto"
+						type="button"
+						variant="ghost"
+						onclick={() => deleteNode(editedNode)}>Delete {editedNode.kind}</Button
+					>
+				</Sheet.Footer>
+			</form>
 		{/if}
 	</Sheet.Content>
 </Sheet.Root>
 
 <Sheet.Root bind:open={rawOpen}>
 	<Sheet.Content class="sm:max-w-2xl" onOpenAutoFocus={focusRawStart}>
-		<Sheet.Header
-			><Sheet.Title>Raw YAML</Sheet.Title><Sheet.Description
-				>Changes stay in this draft until you apply them.</Sheet.Description
-			></Sheet.Header
-		>
+		<Sheet.Header>
+			<Sheet.Title>Raw YAML</Sheet.Title>
+		</Sheet.Header>
 		<div class="flex min-h-0 flex-1 flex-col gap-2 px-4">
-			<Label for="raw-yaml">YAML draft</Label>
 			{#key rawRevision}
 				<Textarea
 					id="raw-yaml"
+					aria-label="Raw YAML source"
 					bind:ref={rawTextarea}
 					class="min-h-80 flex-1 resize-none text-xs"
 					bind:value={rawDraft}
@@ -806,7 +1130,7 @@
 				onclick={() => {
 					rawOpen = false;
 					rawError = '';
-				}}>Discard</Button
+				}}>Cancel</Button
 			><Button onclick={applyRaw}>Apply</Button></Sheet.Footer
 		>
 	</Sheet.Content>
@@ -818,7 +1142,7 @@
 			><AlertDialog.Title>Resume unsaved work?</AlertDialog.Title><AlertDialog.Description
 				>{recovery
 					? `${recovery.filename}, saved ${new Date(recovery.timestamp).toLocaleString()}`
-					: 'A recovery draft is available.'}</AlertDialog.Description
+					: ''}</AlertDialog.Description
 			></AlertDialog.Header
 		><AlertDialog.Footer
 			><AlertDialog.Cancel onclick={clearRecovery}>Discard</AlertDialog.Cancel><AlertDialog.Action

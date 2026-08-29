@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { parsePowerDocument, patchScalar, replaceSection, sectionData } from './power-document';
+import {
+	applyNodeField,
+	parsePowerDocument,
+	patchScalar,
+	replaceSection,
+	sectionData
+} from './power-document';
 
 const sample = `# board power\r
 source:\r
@@ -81,5 +87,19 @@ loads:
 		expect(messages).toContain('no load mode values');
 		expect(messages).toContain('contains a cycle');
 		expect(messages).toContain('invalid typical current');
+	});
+
+	it('applies fields to a temporary document without changing the input document', () => {
+		const parsed = parsePowerDocument(sample);
+		const preview = applyNodeField(parsed, 'regulator', 0, 'efficiency', '1.2', true);
+
+		expect(parsed.source).toBe(sample);
+		expect(preview.source).toContain('efficiency: 1.2');
+		expect(preview.model.issues.map((issue) => issue.message)).toContain(
+			'U1 efficiency must be from 0 to 1.'
+		);
+		expect(() => applyNodeField(parsed, 'rail', 0, 'nominal', '', true)).toThrow(
+			'3V3 has an invalid nominal.'
+		);
 	});
 });

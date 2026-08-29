@@ -285,6 +285,44 @@ export function patchScalar(
 	return parsePowerDocument(next);
 }
 
+export function applyNodeField(
+	parsed: ParsedPowerDocument,
+	kind: Kind,
+	index: number,
+	key: string,
+	raw: string,
+	numeric = false
+): ParsedPowerDocument {
+	const target = {
+		source: parsed.model.sources,
+		regulator: parsed.model.regulators,
+		rail: parsed.model.rails,
+		load: parsed.model.loads
+	}[kind][index];
+	if (!target) throw new YamlDocumentError({ message: `Cannot edit missing ${kind} ${index}.` });
+	const value = numeric ? Number(raw) : raw;
+	if (numeric && (raw.trim() === '' || !Number.isFinite(value)))
+		throw new YamlDocumentError({
+			message: `${target.name || kind} has an invalid ${key.replaceAll('_', ' ')}.`
+		});
+	try {
+		return patchScalar(parsed, target.paths[key], value);
+	} catch {
+		const section = target.kind === 'source' ? (target.paths.name[0] as string) : `${target.kind}s`;
+		const content = structuredClone(sectionData(parsed, section));
+		const item = (Array.isArray(content) ? content[target.index] : content) as Record<
+			string,
+			unknown
+		>;
+		if (!item) return parsed;
+		const path = target.paths[key].slice(Array.isArray(content) ? 2 : 1);
+		let cursor = item;
+		for (const part of path.slice(0, -1)) cursor = (cursor[part] ??= {}) as Record<string, unknown>;
+		cursor[path.at(-1)!] = value;
+		return replaceSection(parsed, section, content);
+	}
+}
+
 export function replaceSection(
 	parsed: ParsedPowerDocument,
 	key: string,

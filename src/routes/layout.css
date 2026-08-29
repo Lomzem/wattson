@@ -154,12 +154,12 @@
 		grid-template-columns:
 			minmax(9rem, 1fr) 2rem minmax(9rem, 1fr) 2rem minmax(9rem, 1fr)
 			2rem minmax(9rem, 1.35fr);
-		@apply items-center border border-border bg-background p-3;
+		@apply items-center border border-border bg-muted/30 p-3;
 	}
 	.direct-path {
 		display: grid;
 		grid-template-columns: minmax(9rem, 1fr) 2rem minmax(9rem, 2fr);
-		@apply items-center border border-border bg-background p-3;
+		@apply items-center border border-border bg-muted/30 p-3;
 	}
 	.path-stage {
 		@apply min-w-0;
@@ -192,16 +192,60 @@
 		@apply mb-0.5 block text-[10px] text-muted-foreground;
 	}
 	.node {
-		@apply flex w-full items-center justify-between gap-2 border-l-2 border-border bg-background px-3 py-2.5 text-left transition hover:border-primary hover:bg-muted focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none;
+		@apply relative block w-full border-l-2 border-border bg-muted/60 px-3 py-2.5 text-left transition hover:border-primary hover:bg-muted focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none;
 	}
 	.topology-node {
 		@apply min-w-0;
 	}
+	.node-content {
+		@apply block min-w-0;
+	}
 	.node-kind {
 		@apply block text-[10px] font-medium text-muted-foreground;
 	}
+	.node-name {
+		@apply block text-sm leading-snug font-medium [overflow-wrap:anywhere];
+	}
+	.node-metrics {
+		@apply mt-2 grid min-w-0 gap-x-3 gap-y-1 border-t border-border/60 pt-2;
+	}
+	.node-metrics-source,
+	.node-metrics-rail,
+	.node-metrics-load,
+	.node-metrics-regulator {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+	.node-metric {
+		@apply min-w-0;
+	}
+	.node-metric dt {
+		@apply text-[9px] leading-tight text-muted-foreground;
+	}
+	.node-metric dd {
+		@apply mt-0.5 text-xs leading-tight font-medium [overflow-wrap:anywhere];
+	}
+	.node-metric-primary {
+		grid-column: 1 / -1;
+		@apply text-center;
+	}
+	.node-metrics-source [data-metric='min'],
+	.node-metrics-rail [data-metric='min'],
+	.node-metrics-load [data-metric='typical'],
+	.node-metrics-regulator [data-metric='efficiency'] {
+		grid-column: 1;
+	}
+	.node-metrics-source [data-metric='max'],
+	.node-metrics-rail [data-metric='max'],
+	.node-metrics-load [data-metric='maximum'],
+	.node-metrics-regulator [data-metric='current-limit'] {
+		grid-column: 2;
+		@apply text-right;
+	}
 	.node-issue {
-		@apply border-l-destructive;
+		@apply border-l-destructive pr-8;
+	}
+	.node-issue > svg {
+		@apply absolute top-3 right-3;
 	}
 	.missing-reference {
 		@apply block border-l-2 border-destructive bg-destructive/5 px-3 py-2 text-sm;
