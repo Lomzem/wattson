@@ -174,6 +174,12 @@
 	.topology-heading span {
 		@apply font-normal;
 	}
+	.link-status-bar {
+		@apply flex min-w-0 items-center justify-between gap-3 border-b border-primary/30 bg-accent/35 px-6 py-3 text-sm;
+	}
+	.link-status-error {
+		@apply border-destructive/40 bg-destructive/5;
+	}
 	.power-paths,
 	.direct-paths {
 		@apply space-y-3;
@@ -223,8 +229,23 @@
 	.node {
 		@apply relative block w-full border-l-2 border-border bg-muted/60 px-3 py-2.5 text-left transition hover:border-primary hover:bg-muted focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none;
 	}
+	.node-shell {
+		@apply grid min-w-0 grid-cols-[minmax(0,1fr)];
+	}
+	.node-link-target {
+		@apply border-primary bg-accent ring-2 ring-primary/35 hover:bg-accent focus-visible:ring-3;
+	}
+	.node-link-blocked {
+		@apply cursor-not-allowed opacity-40 hover:border-border hover:bg-muted/60;
+	}
 	.topology-node {
 		@apply min-w-0;
+	}
+	.node-kind-row {
+		@apply flex min-w-0 items-center justify-between gap-2;
+	}
+	.node-link-cue {
+		@apply shrink-0 rounded-sm bg-primary px-1.5 py-0.5 text-[10px] leading-none font-medium text-primary-foreground;
 	}
 	.node-content {
 		@apply block min-w-0;
@@ -238,12 +259,12 @@
 	.node-metrics {
 		@apply mt-2 grid min-w-0 gap-x-3 gap-y-1 border-t border-border/60 pt-2;
 	}
-	.node-metrics-load,
 	.node-metrics-regulator {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
 	.node-metrics-source,
-	.node-metrics-rail {
+	.node-metrics-rail,
+	.node-metrics-load {
 		grid-template-columns: repeat(3, minmax(0, 1fr));
 		@apply gap-x-2;
 	}
@@ -256,28 +277,24 @@
 	.node-metric dd {
 		@apply mt-0.5 text-xs leading-tight font-medium [overflow-wrap:anywhere];
 	}
-	.node-metrics-load .node-metric-primary {
-		grid-column: 1 / -1;
-		@apply text-center;
-	}
 	.node-metrics-source [data-metric='min'],
 	.node-metrics-rail [data-metric='min'],
-	.node-metrics-load [data-metric='typical'],
 	.node-metrics-regulator [data-metric='efficiency'] {
 		grid-column: 1;
 	}
-	.node-metrics-load [data-metric='maximum'],
 	.node-metrics-regulator [data-metric='current-limit'] {
 		grid-column: 2;
 		@apply text-right;
 	}
 	.node-metrics-source [data-metric='nominal'],
-	.node-metrics-rail [data-metric='nominal'] {
+	.node-metrics-rail [data-metric='nominal'],
+	.node-metrics-load [data-metric='typical'] {
 		grid-column: 2;
 		@apply text-center;
 	}
 	.node-metrics-source [data-metric='max'],
-	.node-metrics-rail [data-metric='max'] {
+	.node-metrics-rail [data-metric='max'],
+	.node-metrics-load [data-metric='maximum'] {
 		grid-column: 3;
 		@apply text-right;
 	}
@@ -301,7 +318,35 @@
 	}
 }
 
-@media (max-width: 700px) {
+.mobile-node-actions {
+	display: none;
+}
+
+@media (max-width: 700px), (pointer: coarse) {
+	.link-status-bar {
+		@apply px-4;
+	}
+	.link-cancel-action,
+	.relationship-select-trigger,
+	.relationship-select-item,
+	.node-action-item {
+		min-height: 44px;
+	}
+	.node-shell {
+		@apply grid-cols-[minmax(0,1fr)_2.75rem] items-start gap-1;
+	}
+	.mobile-node-actions {
+		display: inline-flex;
+		min-width: 44px;
+		min-height: 44px;
+	}
+	.mobile-node-actions:disabled {
+		display: none;
+	}
+	.node-link-target,
+	.node-link-blocked {
+		grid-column: 1 / -1;
+	}
 	.power-path,
 	.direct-path {
 		grid-template-columns: minmax(0, 1fr);

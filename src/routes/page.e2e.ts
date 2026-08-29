@@ -329,7 +329,7 @@ test('creates, edits, validates raw YAML, and labels fallback download', async (
 	await name.press('Enter');
 	await expect(page.locator('[role="dialog"][data-state="open"]')).toHaveCount(0);
 	expect(browserErrors).toEqual([]);
-	await expect(page.getByRole('button', { name: /CORE/ })).toBeVisible();
+	await expect(page.getByRole('button', { name: /^rail CORE/ })).toBeVisible();
 	await page.getByRole('button', { name: 'More file actions' }).click();
 	await page.getByRole('menuitem', { name: 'View Raw YAML' }).click();
 	const sourceBeforeEscape = await page.getByLabel('Raw YAML source').inputValue();
@@ -338,7 +338,7 @@ test('creates, edits, validates raw YAML, and labels fallback download', async (
 	await expect(page.getByText('YAML draft', { exact: true })).toHaveCount(0);
 	await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
 
-	await page.getByRole('button', { name: /CORE/ }).click();
+	await page.getByRole('button', { name: /^rail CORE/ }).click();
 	await page.getByRole('dialog').getByLabel('Nominal voltage').fill('2.5');
 	await page.getByRole('dialog').getByLabel('Nominal voltage').blur();
 	await page.keyboard.press('Escape');
@@ -348,22 +348,22 @@ test('creates, edits, validates raw YAML, and labels fallback download', async (
 	await page.getByRole('menuitem', { name: 'View Raw YAML' }).click();
 	await expect(page.getByLabel('Raw YAML source')).toHaveValue(sourceBeforeEscape);
 	await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
-	await page.getByRole('button', { name: /CORE/ }).click();
+	await page.getByRole('button', { name: /^rail CORE/ }).click();
 	await page.locator('[role="dialog"][data-state="open"]').getByLabel('Name').fill('CANCELLED');
 	await page.keyboard.press('Escape');
-	await expect(page.getByRole('button', { name: /CORE/ })).toBeVisible();
-	await expect(page.getByRole('button', { name: /CANCELLED/ })).toHaveCount(0);
+	await expect(page.getByRole('button', { name: /^rail CORE/ })).toBeVisible();
+	await expect(page.getByRole('button', { name: /^rail CANCELLED/ })).toHaveCount(0);
 	await expect(page.getByText('rail properties', { exact: true })).toHaveCount(0);
 	await page.getByRole('button', { name: 'More file actions' }).click();
 	await page.getByRole('menuitem', { name: 'View Raw YAML' }).click();
 	await expect(page.getByLabel('Raw YAML source')).toHaveValue(sourceBeforeEscape);
 	await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
-	await page.getByRole('button', { name: /CORE/ }).click();
+	await page.getByRole('button', { name: /^rail CORE/ }).click();
 	await expect(page.getByRole('dialog').getByLabel('Nominal voltage')).toHaveValue('3.3');
 	await page.getByRole('dialog').getByLabel('Name').fill('SAVED');
 	await page.getByRole('dialog').getByLabel('Nominal voltage').fill('3.3');
 	await page.getByRole('dialog').getByLabel('Nominal voltage').press('Enter');
-	await expect(page.getByRole('button', { name: /SAVED/ })).toBeVisible();
+	await expect(page.getByRole('button', { name: /^rail SAVED/ })).toBeVisible();
 
 	await page.getByRole('button', { name: 'More file actions' }).click();
 	await page.getByRole('menuitem', { name: 'View Raw YAML' }).click();
@@ -375,7 +375,7 @@ test('creates, edits, validates raw YAML, and labels fallback download', async (
 	await expect(page.getByRole('alert')).toBeVisible();
 	await expect(page.getByRole('dialog').getByRole('heading', { name: 'Raw YAML' })).toBeVisible();
 	await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
-	await expect(page.getByRole('button', { name: /SAVED/ })).toBeVisible();
+	await expect(page.getByRole('button', { name: /^rail SAVED/ })).toBeVisible();
 	expect(browserErrors).toEqual([]);
 });
 
@@ -482,9 +482,14 @@ loads:
 		{ width: 390, height: 844 }
 	]) {
 		await page.setViewportSize(viewport);
-		for (const node of [source, rail]) {
+		for (const [node, expectedOrder] of [
+			[source, ['min', 'nominal', 'max']],
+			[rail, ['min', 'nominal', 'max']],
+			[load, ['quantity', 'typical', 'maximum']]
+		] as const) {
 			const metricLayout = await node.locator('.node-metrics').evaluate((metrics) => {
 				const items = [...metrics.querySelectorAll<HTMLElement>('.node-metric')];
+				const card = metrics.closest<HTMLElement>('.topology-node')!;
 				return {
 					order: items.map((item) => item.dataset.metric),
 					tops: items.map((item) => item.getBoundingClientRect().top),
@@ -493,11 +498,12 @@ loads:
 					valueTops: items.map((item) => item.querySelector('dd')!.getBoundingClientRect().top),
 					lefts: items.map((item) => item.getBoundingClientRect().left),
 					fits:
+						card.scrollWidth <= card.clientWidth &&
 						metrics.scrollWidth <= metrics.clientWidth &&
 						items.every((item) => item.scrollWidth <= item.clientWidth)
 				};
 			});
-			expect(metricLayout.order).toEqual(['min', 'nominal', 'max']);
+			expect(metricLayout.order).toEqual(expectedOrder);
 			expect(new Set(metricLayout.tops).size).toBe(1);
 			expect(new Set(metricLayout.heights).size).toBe(1);
 			expect(new Set(metricLayout.labelTops).size).toBe(1);
@@ -891,6 +897,188 @@ test('edits and deletes the exact node from its context menu', async ({ page }) 
 	await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
 	await expect(railA).toHaveCount(0);
 	await expect(page.getByRole('button', { name: /^rail RAIL_B/ })).toBeVisible();
+});
+
+const linkingYaml = `source:
+  - { name: VIN, voltage: { nominal: 12 } }
+  - { name: USB, voltage: { nominal: 5 } }
+rails:
+  - { name: 5V, nominal_voltage: 5 }
+  - { name: 3V3, nominal_voltage: 3.3 }
+regulators:
+  - { name: REG_5V, input: VIN, output: 5V, efficiency: 0.9 }
+  - { name: REG_3V3, input: 5V, output: 3V3, efficiency: 0.9 }
+loads:
+  - { name: MCU, rail: 3V3, current: { typical: 0.1 } }
+`;
+
+async function openLinkingDocument(page: Page) {
+	await page.goto('/');
+	await page.locator('input[type="file"]').setInputFiles({
+		name: 'linking.yaml',
+		mimeType: 'application/yaml',
+		buffer: Buffer.from(linkingYaml)
+	});
+}
+
+async function rawYaml(page: Page) {
+	await page.getByRole('button', { name: 'More file actions' }).click();
+	await page.getByRole('menuitem', { name: 'View Raw YAML' }).click();
+	return page.getByLabel('Raw YAML source');
+}
+
+test('links by pointer, updates exact YAML, cancels, and undoes', async ({ page }) => {
+	await openLinkingDocument(page);
+	const regulator = page.getByRole('button', { name: /^regulator REG_3V3/ }).first();
+	await regulator.click({ button: 'right' });
+	await expect(page.getByRole('menuitem')).toHaveText([
+		'Edit',
+		'Change input',
+		'Change output',
+		'Delete'
+	]);
+	await page.getByRole('menuitem', { name: 'Change input' }).click();
+
+	await expect(page.getByText("Select a source or rail for REG_3V3's input.")).toBeVisible();
+	const usbTargets = page.getByRole('button', { name: /^source USB.*link target/ });
+	await expect(usbTargets.first()).toBeVisible();
+	await expect(usbTargets.first().getByText('Link here')).toBeVisible();
+	await usbTargets.first().click();
+	await expect(page.getByText('REG_3V3 input changed to USB.')).toBeVisible();
+
+	let raw = await rawYaml(page);
+	await expect(raw).toHaveValue(/name: REG_3V3, input: USB, output: 3V3/);
+	await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
+	await page.getByRole('button', { name: 'Undo' }).click();
+	await expect(page.getByText('Link change undone.')).toBeVisible();
+	raw = await rawYaml(page);
+	await expect(raw).toHaveValue(/name: REG_3V3, input: 5V, output: 3V3/);
+	await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
+
+	const load = page.getByRole('button', { name: /^load MCU/ }).first();
+	await load.click({ button: 'right' });
+	await expect(page.getByRole('menuitem')).toHaveText(['Edit', 'Change supply', 'Delete']);
+	await page.getByRole('menuitem', { name: 'Change supply' }).click();
+	await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+	await expect(page.getByText(/Select a source or rail to supply MCU/)).toHaveCount(0);
+	await expect(load).toBeFocused();
+});
+
+test('supports keyboard linking, blocks cycles, and suppresses add shortcuts', async ({ page }) => {
+	await openLinkingDocument(page);
+	const regulator = page.getByRole('button', { name: /^regulator REG_5V/ }).first();
+	const firstNode = page.locator('.topology-node').first();
+	await page.getByRole('button', { name: /^Add/ }).focus();
+	await page.keyboard.press('Tab');
+	await expect(firstNode).toBeFocused();
+	await expect(firstNode).toHaveAttribute('tabindex', '0');
+
+	await regulator.focus();
+	await regulator.press('Shift+F10');
+	await page.getByRole('menuitem', { name: 'Change input' }).focus();
+	await page.keyboard.press('Enter');
+	const cancelLink = page.getByRole('button', { name: 'Cancel', exact: true });
+	await expect(cancelLink).toBeFocused();
+	await page.keyboard.press('Tab');
+	const keyboardTarget = page.locator('.topology-node[data-link-target="true"]').first();
+	await expect(keyboardTarget).toBeFocused();
+	await page.keyboard.press('Enter');
+	await expect(page.getByText('REG_5V input changed to VIN.')).toBeVisible();
+
+	await regulator.click({ button: 'right' });
+	await page.getByRole('menuitem', { name: 'Change input' }).click();
+	await expect(regulator).toBeDisabled();
+	await expect(regulator).toHaveAttribute('tabindex', '-1');
+	const mobileActions = page.locator(
+		'.mobile-node-actions[aria-label="Node actions: REG_5V (regulator)"]'
+	);
+	await expect(mobileActions).toBeHidden();
+	await expect(mobileActions).toBeDisabled();
+
+	const cycleTarget = page.getByRole('button', { name: /^rail 3V3.*link target/ }).first();
+	await cycleTarget.focus();
+	await page.keyboard.press('Enter');
+	await expect(page.getByRole('alert')).toContainText(
+		'Cannot link REG_5V to 3V3: this would create a regulator cycle.'
+	);
+	await expect(page.getByText("Select a source or rail for REG_5V's input.")).toBeVisible();
+
+	const counts = await Promise.all(
+		(['source', 'regulator', 'rail', 'load'] as const).map((kind) =>
+			page.getByRole('button', { name: new RegExp(`^${kind} `) }).count()
+		)
+	);
+	for (const key of ['s', 'e', 'a', 'l', 'Shift+N']) await page.keyboard.press(key);
+	for (const [index, kind] of (['source', 'regulator', 'rail', 'load'] as const).entries())
+		await expect(page.getByRole('button', { name: new RegExp(`^${kind} `) })).toHaveCount(
+			counts[index]
+		);
+
+	await page.keyboard.press('Escape');
+	await expect(page.getByRole('alert')).toHaveCount(0);
+	await expect(regulator).toBeFocused();
+
+	await regulator.press('Shift+F10');
+	await page.getByRole('menuitem', { name: 'Change output' }).click();
+	await page.keyboard.press('Control+Shift+Y');
+	await expect(page.getByRole('dialog', { name: 'Raw YAML' })).toBeVisible();
+	await expect(page.getByText("Select a rail for REG_5V's output.")).toHaveCount(0);
+	const raw = page.getByLabel('Raw YAML source');
+	await expect(raw).toHaveValue(/name: REG_5V, input: VIN, output: 5V/);
+});
+
+test('edits relationship Select fields and has no mobile link-mode overflow', async ({ page }) => {
+	await page.setViewportSize({ width: 1280, height: 800 });
+	await openLinkingDocument(page);
+	const mobileActions = page
+		.getByRole('button', { name: 'Node actions: REG_3V3 (regulator)' })
+		.first();
+	await expect(mobileActions).toBeHidden();
+	await page.setViewportSize({ width: 390, height: 844 });
+	await expect(mobileActions).toBeVisible();
+	const regulator = page.getByRole('button', { name: /^regulator REG_3V3/ }).first();
+	await regulator.click();
+	const dialog = page.getByRole('dialog');
+	const input = dialog.getByLabel('Input rail');
+	const output = dialog.getByLabel('Output rail');
+	await expect(input).toHaveText('5V');
+	await expect(output).toHaveText('3V3');
+
+	await output.click();
+	await expect(output).toHaveCSS('min-height', '44px');
+	await expect(page.getByRole('option', { name: 'VIN' })).toHaveCount(0);
+	await expect(page.getByRole('option', { name: '5V' })).toBeVisible();
+	await expect(page.getByRole('option', { name: '5V' })).toHaveCSS('min-height', '44px');
+	await page.keyboard.press('Escape');
+	await input.click();
+	await expect(page.getByRole('option', { name: 'VIN' })).toBeVisible();
+	await page.getByRole('option', { name: 'USB' }).click();
+	await dialog.getByRole('button', { name: 'Save' }).click();
+
+	let raw = await rawYaml(page);
+	await expect(raw).toHaveValue(/name: REG_3V3, input: USB, output: 3V3/);
+	await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
+
+	await expect(mobileActions).toHaveCSS('min-height', '44px');
+	await expect(mobileActions).toHaveCSS('min-width', '44px');
+	await mobileActions.click();
+	await expect(page.getByRole('menuitem', { name: 'Change output' })).toHaveCSS(
+		'min-height',
+		'44px'
+	);
+	await page.getByRole('menuitem', { name: 'Change output' }).click();
+	await expect(page.getByRole('button', { name: 'Cancel', exact: true })).toHaveCSS(
+		'min-height',
+		'44px'
+	);
+	const overflow = await page.locator('[data-testid="app-shell"]').evaluate((element) => ({
+		app: element.scrollWidth - element.clientWidth,
+		document: document.documentElement.scrollWidth - document.documentElement.clientWidth
+	}));
+	expect(overflow.app).toBeLessThanOrEqual(0);
+	expect(overflow.document).toBeLessThanOrEqual(0);
+	await expect(page.getByRole('button', { name: /^source VIN.*link target/ })).toHaveCount(0);
+	await page.getByRole('button', { name: 'Cancel', exact: true }).click();
 });
 
 test('shows singular and plural validation issue tooltips and opens the first issue', async ({

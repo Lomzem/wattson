@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { createHotkey } from '@tanstack/svelte-hotkeys';
 	import { Effect } from 'effect';
 	import { CaretDown, DownloadSimple, Plus, Warning, DotsThree, Moon, Sun } from 'phosphor-svelte';
@@ -13,6 +13,7 @@
 	import * as Dialog from '$lib/components/ui/dialog';
 	import * as Kbd from '$lib/components/ui/kbd';
 	import * as Sheet from '$lib/components/ui/sheet';
+	import * as Select from '$lib/components/ui/select';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import * as AlertDialog from '$lib/components/ui/alert-dialog';
 	import * as Tooltip from '$lib/components/ui/tooltip';
@@ -50,6 +51,13 @@
 	let conflictOpen = $state(false);
 	let recovery = $state<RecoveryDraft | undefined>();
 	let recoveryOpen = $state(false);
+	type LinkField = 'input' | 'output' | 'rail';
+	type LinkMode = { kind: 'regulator' | 'load'; index: number; field: LinkField; name: string };
+	type LinkFeedback = { message: string; undoSource?: string; linkedSource?: string };
+	let linkMode = $state<LinkMode | null>(null);
+	let linkError = $state('');
+	let linkFeedback = $state<LinkFeedback | null>(null);
+	let linkCancelButton = $state<HTMLButtonElement | null>(null);
 	let input: HTMLInputElement;
 	let rawTextarea = $state<HTMLTextAreaElement | null>(null);
 	let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -249,6 +257,9 @@
 		handle = fileHandle;
 		selected = null;
 		rawOpen = false;
+		linkMode = null;
+		linkError = '';
+		linkFeedback = null;
 	}
 
 	async function openFile(file: File, fileHandle?: FileSystemFileHandle) {
@@ -262,6 +273,7 @@
 	}
 
 	async function openCommand() {
+		if (linkMode) void cancelLink(false);
 		if (dirty && !window.confirm('Discard the current unsaved changes?')) return;
 		const picker = (window as PickerWindow).showOpenFilePicker;
 		if (!picker) return input.click();
@@ -334,6 +346,7 @@
 
 	function openRaw() {
 		if (!parsed) return;
+		if (linkMode) void cancelLink(false);
 		selected = null;
 		rawDraft = parsed.source;
 		rawError = '';
@@ -399,6 +412,15 @@
 		return number !== 0 && Math.abs(number) < 1
 			? `${compactNumber(number * 1000)} mA`
 			: `${compactNumber(number)} A`;
+	}
+
+	function relationshipOptions(kind: Kind, field: string) {
+		if (!parsed) return [];
+		const nodes =
+			kind === 'regulator' && field === 'output'
+				? parsed.model.rails
+				: [...parsed.model.sources, ...parsed.model.rails];
+		return [...new Set(nodes.map((node) => node.name).filter(Boolean))];
 	}
 
 	type NodeMetric = {
@@ -644,7 +666,7 @@
 	}
 
 	function canUseTopologyShortcut() {
-		if (!parsed || typeof document === 'undefined') return false;
+		if (!parsed || linkMode || typeof document === 'undefined') return false;
 		const active = document.activeElement;
 		if (
 			active?.closest(
@@ -688,6 +710,92 @@
 		selected = { kind: node.kind, index: node.index };
 	}
 
+	function isLinkTarget(node: PowerNode) {
+		if (!linkMode || !node.name) return false;
+		return linkMode.field === 'output'
+			? node.kind === 'rail'
+			: node.kind === 'source' || node.kind === 'rail';
+	}
+
+	function startLink(node: PowerNode, field: LinkField) {
+		if (node.kind !== 'regulator' && node.kind !== 'load') return;
+		selected = null;
+		rawOpen = false;
+		linkMode = {
+			kind: node.kind,
+			index: node.index,
+			field,
+			name: node.name || `Unnamed ${node.kind}`
+		};
+		linkError = '';
+		linkFeedback = null;
+		void tick().then(() => requestAnimationFrame(() => linkCancelButton?.focus()));
+	}
+
+	function editNodeAction(node: PowerNode) {
+		if (linkMode) void cancelLink(false);
+		selectNode(node);
+	}
+
+	function deleteNodeAction(node: PowerNode) {
+		if (linkMode) void cancelLink(false);
+		deleteNode(node);
+	}
+
+	async function cancelLink(restoreFocus = true) {
+		const initiator = linkMode;
+		linkMode = null;
+		linkError = '';
+		if (!initiator || !restoreFocus) return;
+		await tick();
+		document
+			.querySelector<HTMLElement>(`[data-node-key="${initiator.kind}:${initiator.index}"]`)
+			?.focus();
+	}
+
+	function commitLink(target: PowerNode) {
+		if (!parsed || !linkMode || !isLinkTarget(target)) return;
+		const before = parsed.source;
+		const next = applyNodeField(parsed, linkMode.kind, linkMode.index, linkMode.field, target.name);
+		if (
+			next.model.issues.some(
+				(issue) => issue.message === 'The regulator topology contains a cycle.'
+			)
+		) {
+			linkError = `Cannot link ${linkMode.name} to ${target.name}: this would create a regulator cycle.`;
+			return;
+		}
+		const relationship = linkMode.field === 'rail' ? 'supply' : linkMode.field;
+		parsed = next;
+		linkFeedback = {
+			message: `${linkMode.name} ${relationship} changed to ${target.name}.`,
+			undoSource: before,
+			linkedSource: next.source
+		};
+		linkMode = null;
+		linkError = '';
+	}
+
+	function undoLink() {
+		if (!linkFeedback?.undoSource) return;
+		parsed = parsePowerDocument(linkFeedback.undoSource);
+		linkFeedback = { message: 'Link change undone.' };
+	}
+
+	function linkInstruction() {
+		if (!linkMode) return '';
+		if (linkMode.field === 'input') return `Select a source or rail for ${linkMode.name}'s input.`;
+		if (linkMode.field === 'output') return `Select a rail for ${linkMode.name}'s output.`;
+		return `Select a source or rail to supply ${linkMode.name}.`;
+	}
+
+	function handleLinkEscape(event: KeyboardEvent) {
+		if (event.key !== 'Escape' || !linkMode) return;
+		event.preventDefault();
+		event.stopImmediatePropagation();
+		void cancelLink();
+	}
+
 	createHotkey('Mod+O', openCommand, { preventDefault: true, ignoreInputs: true });
 	createHotkey('Mod+S', saveCommand, { preventDefault: true, ignoreInputs: true });
 	createHotkey('Mod+Shift+S', saveAsCommand, { preventDefault: true, ignoreInputs: true });
@@ -712,6 +820,12 @@
 			},
 			() => ({ enabled: Boolean(parsed), ignoreInputs: true })
 		);
+
+	$effect(() => {
+		if (linkFeedback?.linkedSource && parsed?.source !== linkFeedback.linkedSource) {
+			linkFeedback = null;
+		}
+	});
 
 	$effect(() => {
 		if (!dirty) {
@@ -753,6 +867,7 @@
 </script>
 
 <svelte:head><title>Wattson | Powerman YAML editor</title></svelte:head>
+<svelte:window onkeydown={handleLinkEscape} />
 
 <input
 	class="sr-only"
@@ -770,45 +885,110 @@
 
 {#snippet topologyNode(node: PowerNode, context: string)}
 	{@const metrics = nodeMetrics(node)}
-	<ContextMenu.Root>
-		<ContextMenu.Trigger>
-			{#snippet child({ props })}
-				<button
-					{...props}
-					class="node topology-node"
-					class:node-issue={parsed?.model.issues.some(
-						(issue) => issue.subject === `${node.kind}:${node.index}`
-					)}
-					aria-label={`${node.kind} ${node.name || 'unnamed'}, ${context}${metrics.items.length ? `, ${metrics.items.map((metric) => `${metric.label} ${metric.value}`).join(', ')}` : ''}`}
-					onclick={() => selectNode(node)}
+	{@const linkTarget = isLinkTarget(node)}
+	{@const linkBlocked = Boolean(linkMode && !linkTarget)}
+	<div class="node-shell">
+		<ContextMenu.Root>
+			<ContextMenu.Trigger>
+				{#snippet child({ props })}
+					<button
+						{...props}
+						class="node topology-node"
+						class:node-link-target={linkTarget}
+						class:node-link-blocked={linkBlocked}
+						class:node-issue={parsed?.model.issues.some(
+							(issue) => issue.subject === `${node.kind}:${node.index}`
+						)}
+						data-node-key={`${node.kind}:${node.index}`}
+						data-link-target={linkTarget || undefined}
+						tabindex={linkBlocked ? -1 : 0}
+						disabled={linkBlocked}
+						aria-label={`${node.kind} ${node.name || 'unnamed'}, ${context}${linkTarget ? ', link target' : ''}${metrics.items.length ? `, ${metrics.items.map((metric) => `${metric.label} ${metric.value}`).join(', ')}` : ''}`}
+						onclick={() => (linkTarget ? commitLink(node) : selectNode(node))}
+					>
+						<span class="node-content">
+							<span class="node-kind-row">
+								<span class="node-kind">{node.kind}</span>
+								{#if linkTarget}<span class="node-link-cue">Link here</span>{/if}
+							</span>
+							<span class="node-name">{node.name || `Unnamed ${node.kind}`}</span>
+							{#if metrics.items.length}<dl class={`node-metrics node-metrics-${metrics.layout}`}>
+									{#each metrics.items as metric (metric.key)}<div
+											class="node-metric"
+											class:node-metric-primary={metric.primary}
+											data-metric={metric.key}
+										>
+											<dt>{metric.label}</dt>
+											<dd>{metric.value}</dd>
+										</div>{/each}
+								</dl>{/if}
+						</span>
+						{#if parsed?.model.issues.some((issue) => issue.subject === `${node.kind}:${node.index}`)}
+							<Warning class="size-4 shrink-0" /><span class="sr-only">Has validation issues</span>
+						{/if}
+					</button>
+				{/snippet}
+			</ContextMenu.Trigger>
+			<ContextMenu.Content>
+				<ContextMenu.Item class="node-action-item" onclick={() => editNodeAction(node)}
+					>Edit</ContextMenu.Item
 				>
-					<span class="node-content">
-						<span class="node-kind">{node.kind}</span>
-						<span class="node-name">{node.name || `Unnamed ${node.kind}`}</span>
-						{#if metrics.items.length}<dl class={`node-metrics node-metrics-${metrics.layout}`}>
-								{#each metrics.items as metric (metric.key)}<div
-										class="node-metric"
-										class:node-metric-primary={metric.primary}
-										data-metric={metric.key}
-									>
-										<dt>{metric.label}</dt>
-										<dd>{metric.value}</dd>
-									</div>{/each}
-							</dl>{/if}
-					</span>
-					{#if parsed?.model.issues.some((issue) => issue.subject === `${node.kind}:${node.index}`)}
-						<Warning class="size-4 shrink-0" /><span class="sr-only">Has validation issues</span>
-					{/if}
-				</button>
-			{/snippet}
-		</ContextMenu.Trigger>
-		<ContextMenu.Content>
-			<ContextMenu.Item onclick={() => selectNode(node)}>Edit</ContextMenu.Item>
-			<ContextMenu.Item variant="destructive" onclick={() => deleteNode(node)}
-				>Delete</ContextMenu.Item
-			>
-		</ContextMenu.Content>
-	</ContextMenu.Root>
+				{#if node.kind === 'regulator'}
+					<ContextMenu.Item class="node-action-item" onclick={() => startLink(node, 'input')}
+						>Change input</ContextMenu.Item
+					>
+					<ContextMenu.Item class="node-action-item" onclick={() => startLink(node, 'output')}
+						>Change output</ContextMenu.Item
+					>
+				{:else if node.kind === 'load'}
+					<ContextMenu.Item class="node-action-item" onclick={() => startLink(node, 'rail')}
+						>Change supply</ContextMenu.Item
+					>
+				{/if}
+				<ContextMenu.Item
+					class="node-action-item"
+					variant="destructive"
+					onclick={() => deleteNodeAction(node)}>Delete</ContextMenu.Item
+				>
+			</ContextMenu.Content>
+		</ContextMenu.Root>
+		<DropdownMenu.Root>
+			<DropdownMenu.Trigger>
+				{#snippet child({ props })}
+					<Button
+						{...props}
+						class="mobile-node-actions"
+						variant="outline"
+						size="icon-sm"
+						disabled={Boolean(linkMode)}
+						aria-label={`Node actions: ${node.name || 'unnamed'} (${node.kind})`}
+						><DotsThree /></Button
+					>
+				{/snippet}
+			</DropdownMenu.Trigger>
+			<DropdownMenu.Content align="end">
+				<DropdownMenu.Item class="node-action-item" onclick={() => editNodeAction(node)}
+					>Edit</DropdownMenu.Item
+				>
+				{#if node.kind === 'regulator'}
+					<DropdownMenu.Item class="node-action-item" onclick={() => startLink(node, 'input')}
+						>Change input</DropdownMenu.Item
+					>
+					<DropdownMenu.Item class="node-action-item" onclick={() => startLink(node, 'output')}
+						>Change output</DropdownMenu.Item
+					>
+				{:else if node.kind === 'load'}
+					<DropdownMenu.Item class="node-action-item" onclick={() => startLink(node, 'rail')}
+						>Change supply</DropdownMenu.Item
+					>
+				{/if}
+				<DropdownMenu.Item
+					class="node-action-item text-destructive"
+					onclick={() => deleteNodeAction(node)}>Delete</DropdownMenu.Item
+				>
+			</DropdownMenu.Content>
+		</DropdownMenu.Root>
+	</div>
 {/snippet}
 
 {#snippet themeToggle()}
@@ -953,6 +1133,30 @@
 						</DropdownMenu.Root></Card.Action
 					>
 				</Card.Header>
+				{#if linkMode || linkFeedback}
+					<div
+						class="link-status-bar"
+						class:link-status-error={Boolean(linkError)}
+						role={linkError ? 'alert' : 'status'}
+						aria-live={linkError ? 'assertive' : 'polite'}
+					>
+						<div class="min-w-0">
+							<p class="font-medium">{linkMode ? linkInstruction() : linkFeedback?.message}</p>
+							{#if linkError}<p class="mt-1 text-sm text-destructive">{linkError}</p>{/if}
+						</div>
+						{#if linkMode}
+							<Button
+								bind:ref={linkCancelButton}
+								class="link-cancel-action"
+								variant="outline"
+								size="sm"
+								onclick={() => cancelLink()}>Cancel</Button
+							>
+						{:else if linkFeedback?.undoSource}
+							<Button variant="outline" size="sm" onclick={undoLink}>Undo</Button>
+						{/if}
+					</div>
+				{/if}
 				{#if hasTopologyEntities}<Card.Content>
 						<nav aria-label="Topology" class="topology">
 							{#if topology.conversions.length}
@@ -1115,16 +1319,37 @@
 				</Sheet.Header>
 				<div class="space-y-4 px-4">
 					{#each fields[currentNode.kind] as field (field.key)}<div class="space-y-1.5">
-							<Label for={`field-${field.key}`}>{field.label}</Label><Input
-								id={`field-${field.key}`}
-								type={field.type ?? 'text'}
-								step={field.step}
-								min={field.min}
-								max={field.max}
-								value={componentDraft[field.key] ?? ''}
-								oninput={inputComponentField}
-								onblur={blurComponentField}
-							/>
+							<Label id={`field-${field.key}-label`} for={`field-${field.key}`}>{field.label}</Label
+							>
+							{#if (currentNode.kind === 'regulator' && (field.key === 'input' || field.key === 'output')) || (currentNode.kind === 'load' && field.key === 'rail')}
+								<Select.Root type="single" bind:value={componentDraft[field.key]}>
+									<Select.Trigger
+										id={`field-${field.key}`}
+										aria-labelledby={`field-${field.key}-label`}
+										class="relationship-select-trigger w-full"
+									>
+										<span class="truncate"
+											>{componentDraft[field.key] || `Select ${field.label.toLowerCase()}`}</span
+										>
+									</Select.Trigger>
+									<Select.Content>
+										{#each relationshipOptions(currentNode.kind, field.key) as option (option)}
+											<Select.Item class="relationship-select-item" value={option} label={option} />
+										{/each}
+									</Select.Content>
+								</Select.Root>
+							{:else}
+								<Input
+									id={`field-${field.key}`}
+									type={field.type ?? 'text'}
+									step={field.step}
+									min={field.min}
+									max={field.max}
+									value={componentDraft[field.key] ?? ''}
+									oninput={inputComponentField}
+									onblur={blurComponentField}
+								/>
+							{/if}
 						</div>{/each}
 				</div>
 				{#if currentIssues.length}<div class="mx-4 border-l-2 border-destructive pl-3">
