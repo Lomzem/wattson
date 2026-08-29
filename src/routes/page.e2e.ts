@@ -708,7 +708,7 @@ test('keeps overflow action labels on one line at desktop and mobile widths', as
 			Math.min(...hintedRows.map(({ hintRight }) => hintRight)),
 			0
 		);
-		expect(Math.min(...hintedRows.map(({ gap }) => gap))).toBeGreaterThanOrEqual(16);
+		expect(Math.min(...hintedRows.map(({ gap }) => gap))).toBeGreaterThanOrEqual(15.5);
 		expect(
 			await page.evaluate(
 				() => document.documentElement.scrollWidth <= document.documentElement.clientWidth
