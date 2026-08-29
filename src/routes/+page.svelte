@@ -1168,7 +1168,7 @@
 					id="raw-yaml"
 					aria-label="Raw YAML source"
 					bind:ref={rawTextarea}
-					class="min-h-80 flex-1 resize-none text-xs"
+					class="min-h-80 flex-1 resize-none font-mono text-xs"
 					bind:value={rawDraft}
 					aria-invalid={Boolean(rawError)}
 				/>

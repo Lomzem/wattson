@@ -1,4 +1,200 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
+
+type ContrastResult = { background: string; foreground: string; ratio: number };
+
+async function semanticContrasts(
+	page: Page,
+	pairs: Record<string, [background: string, foreground: string]>
+): Promise<Record<string, ContrastResult>> {
+	return page.evaluate((semanticPairs) => {
+		const toSrgb = (color: string) => {
+			const canvas = document.createElement('canvas');
+			canvas.width = canvas.height = 1;
+			const context = canvas.getContext('2d', { colorSpace: 'srgb' });
+			if (!context) throw new Error('Cannot create color conversion context');
+			context.fillStyle = color;
+			context.fillRect(0, 0, 1, 1);
+			const [red, green, blue] = context.getImageData(0, 0, 1, 1).data;
+			return `rgb(${red}, ${green}, ${blue})`;
+		};
+		const luminance = (color: string) => {
+			const channels = color
+				.match(/[\d.]+/g)
+				?.slice(0, 3)
+				.map(Number);
+			if (!channels || channels.length !== 3) throw new Error(`Cannot parse ${color}`);
+			return channels
+				.map((channel) => channel / 255)
+				.map((channel) =>
+					channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+				)
+				.reduce((total, channel, index) => total + channel * [0.2126, 0.7152, 0.0722][index], 0);
+		};
+		const contrast = (foreground: string, background: string) => {
+			const lighter = Math.max(luminance(foreground), luminance(background));
+			const darker = Math.min(luminance(foreground), luminance(background));
+			return (lighter + 0.05) / (darker + 0.05);
+		};
+
+		return Object.fromEntries(
+			Object.entries(semanticPairs).map(([name, [backgroundToken, foregroundToken]]) => {
+				const probe = document.createElement('span');
+				probe.style.backgroundColor = `var(${backgroundToken})`;
+				probe.style.color = `var(${foregroundToken})`;
+				document.body.append(probe);
+				const styles = getComputedStyle(probe);
+				const background = toSrgb(styles.backgroundColor);
+				const foreground = toSrgb(styles.color);
+				probe.remove();
+				return [name, { background, foreground, ratio: contrast(foreground, background) }];
+			})
+		);
+	}, pairs);
+}
+
+async function elementContrast(locator: Locator): Promise<ContrastResult> {
+	return locator.evaluate((element) => {
+		const toSrgb = (color: string) => {
+			const canvas = document.createElement('canvas');
+			canvas.width = canvas.height = 1;
+			const context = canvas.getContext('2d', { colorSpace: 'srgb' });
+			if (!context) throw new Error('Cannot create color conversion context');
+			context.fillStyle = color;
+			context.fillRect(0, 0, 1, 1);
+			const [red, green, blue] = context.getImageData(0, 0, 1, 1).data;
+			return `rgb(${red}, ${green}, ${blue})`;
+		};
+		const luminance = (color: string) => {
+			const channels = color
+				.match(/[\d.]+/g)
+				?.slice(0, 3)
+				.map(Number);
+			if (!channels || channels.length !== 3) throw new Error(`Cannot parse ${color}`);
+			return channels
+				.map((channel) => channel / 255)
+				.map((channel) =>
+					channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+				)
+				.reduce((total, channel, index) => total + channel * [0.2126, 0.7152, 0.0722][index], 0);
+		};
+		const styles = getComputedStyle(element);
+		const background = toSrgb(styles.backgroundColor);
+		const foreground = toSrgb(styles.color);
+		const lighter = Math.max(luminance(foreground), luminance(background));
+		const darker = Math.min(luminance(foreground), luminance(background));
+		return { background, foreground, ratio: (lighter + 0.05) / (darker + 0.05) };
+	});
+}
+
+test('uses the requested semantic theme and Geist fonts', async ({ page }) => {
+	await page.addInitScript(() => localStorage.setItem('mode-watcher-mode', 'light'));
+	await page.goto('/');
+
+	const root = page.locator('html');
+	const body = page.locator('body');
+	const firstRun = page.getByRole('main');
+	const newYaml = page.getByRole('button', { name: 'New YAML', exact: true });
+	const lightTokens = await root.evaluate((element) => {
+		const styles = getComputedStyle(element);
+		return Object.fromEntries(
+			['--background', '--foreground', '--primary', '--border', '--destructive-foreground'].map(
+				(name) => [name, styles.getPropertyValue(name).trim()]
+			)
+		);
+	});
+	expect(lightTokens).toEqual({
+		'--background': 'oklch(100% 0 0)',
+		'--foreground': 'oklch(24.79% .0058 271.176)',
+		'--primary': 'oklch(57.37% .1946 257.858)',
+		'--border': 'oklch(89.41% .0059 264.53)',
+		'--destructive-foreground': 'oklch(100% 0 0)'
+	});
+	const lightContrast = await semanticContrasts(page, {
+		accent: ['--accent', '--accent-foreground'],
+		'sidebar-accent': ['--sidebar-accent', '--sidebar-accent-foreground']
+	});
+	for (const result of Object.values(lightContrast))
+		expect(result.ratio).toBeGreaterThanOrEqual(4.5);
+	await expect(root).toHaveCSS('--radius', '.45rem');
+	await expect(firstRun).toHaveClass('grid min-h-screen place-items-center bg-muted/30 p-6');
+	await expect(body).toHaveCSS('font-family', /Geist Variable/);
+	await expect(newYaml).toHaveCSS('font-family', /Geist Variable/);
+	await expect(body).not.toHaveCSS('font-family', /Inter/);
+	await expect(newYaml).not.toHaveCSS('font-family', /Inter/);
+	await newYaml.focus();
+	await expect(newYaml).toBeFocused();
+	expect((await elementContrast(newYaml)).ratio).toBeGreaterThanOrEqual(4.5);
+
+	await newYaml.click();
+	const card = page.locator('main [data-slot="card"]').first();
+	await expect(page.locator('header')).toHaveClass(
+		'sticky top-0 z-20 flex min-h-14 items-center gap-2 border-b bg-card/95 px-3 backdrop-blur sm:px-5'
+	);
+	await expect(page.getByRole('main')).toHaveClass(
+		'mx-auto max-w-[1500px] px-4 py-8 sm:px-8 sm:py-12'
+	);
+	const lightColors = await page.evaluate(() => {
+		const rootStyles = getComputedStyle(document.documentElement);
+		return {
+			background: rootStyles.getPropertyValue('--background').trim(),
+			foreground: rootStyles.getPropertyValue('--foreground').trim(),
+			card: rootStyles.getPropertyValue('--card').trim(),
+			border: rootStyles.getPropertyValue('--border').trim()
+		};
+	});
+	expect(lightColors.foreground).not.toBe(lightColors.background);
+	expect(lightColors.border).not.toBe(lightColors.background);
+	await expect(card).toHaveCSS('font-family', /Geist Variable/);
+
+	await page.getByRole('button', { name: 'More file actions' }).click();
+	await page.getByRole('menuitem', { name: 'View Raw YAML' }).click();
+	const rawYaml = page.getByLabel('Raw YAML source');
+	await expect(rawYaml).toHaveCSS('font-family', /Geist Mono Variable/);
+	await expect(rawYaml).not.toHaveCSS('font-family', /Inter/);
+	await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
+
+	await page.getByRole('button', { name: 'Switch to dark mode' }).click();
+	const darkTokens = await root.evaluate((element) => {
+		const styles = getComputedStyle(element);
+		return Object.fromEntries(
+			['--background', '--card', '--border', '--chart-5', '--sidebar'].map((name) => [
+				name,
+				styles.getPropertyValue(name).trim()
+			])
+		);
+	});
+	expect(darkTokens).toEqual({
+		'--background': 'oklch(24.79% .0058 271.176)',
+		'--card': 'oklch(28.52% .0056 271.216)',
+		'--border': 'oklch(36.88% .0074 240.019)',
+		'--chart-5': 'oklch(100% 0 0)',
+		'--sidebar': 'oklch(20.5% 0 0)'
+	});
+	expect(
+		new Set([darkTokens['--background'], darkTokens['--card'], darkTokens['--border']]).size
+	).toBe(3);
+	const darkContrast = await semanticContrasts(page, {
+		primary: ['--primary', '--primary-foreground'],
+		accent: ['--accent', '--accent-foreground'],
+		destructive: ['--destructive', '--destructive-foreground']
+	});
+	for (const result of Object.values(darkContrast))
+		expect(result.ratio).toBeGreaterThanOrEqual(4.5);
+
+	await page.evaluate(() => {
+		const control = document.createElement('button');
+		control.dataset.testid = 'destructive-contrast-control';
+		control.style.backgroundColor = 'var(--destructive)';
+		control.style.color = 'var(--destructive-foreground)';
+		control.textContent = 'Delete';
+		document.body.append(control);
+	});
+	const destructiveControl = page.getByTestId('destructive-contrast-control');
+	expect((await elementContrast(destructiveControl)).ratio).toBeGreaterThanOrEqual(4.5);
+	await destructiveControl.focus();
+	await expect(destructiveControl).toBeFocused();
+	expect((await elementContrast(destructiveControl)).ratio).toBeGreaterThanOrEqual(4.5);
+});
 
 test('creates, edits, validates raw YAML, and labels fallback download', async ({ page }) => {
 	const browserErrors: string[] = [];
