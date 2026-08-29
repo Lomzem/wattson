@@ -30,3 +30,18 @@ export const writeHandle = (handle: FileSystemFileHandle, source: string) =>
 		},
 		catch: (error) => new FileWorkflowError({ operation: 'write', message: String(error) })
 	});
+
+export const compareAndWriteHandle = (
+	handle: FileSystemFileHandle,
+	source: string,
+	baseSource: string,
+	overwrite = false
+) =>
+	Effect.gen(function* () {
+		const disk = yield* readHandle(handle);
+		if (!overwrite && disk !== baseSource && source !== baseSource)
+			return { action: 'conflict' } as const;
+		if (!overwrite && disk !== baseSource) return { action: 'refresh', disk } as const;
+		yield* writeHandle(handle, source);
+		return { action: 'written' } as const;
+	});

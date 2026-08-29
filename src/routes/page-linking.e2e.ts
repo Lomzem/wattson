@@ -54,4 +54,19 @@ test.describe('topology linking', () => {
 		await page.keyboard.press('Escape');
 		await expect(regulator).toBeFocused();
 	});
+
+	test('clears active linking when raw YAML opens', async ({ page }) => {
+		await openDocument(page);
+		await page
+			.getByRole('button', { name: /^regulator REG_3V3/ })
+			.first()
+			.click({ button: 'right' });
+		await page.getByRole('menuitem', { name: 'Change input' }).click();
+		await page.getByRole('button', { name: 'More file actions' }).click();
+		await page.getByRole('menuitem', { name: 'View Raw YAML' }).click();
+		await expect(page.getByLabel('Raw YAML source')).toBeVisible();
+		await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click();
+		await expect(page.getByText("Select a source or rail for REG_3V3's input.")).toHaveCount(0);
+		await expect(page.getByRole('button', { name: /^regulator REG_3V3/ }).first()).toBeEnabled();
+	});
 });
