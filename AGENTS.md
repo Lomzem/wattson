@@ -17,3 +17,7 @@ To verify correctness of UI use this subagent workflow:
 - The review agent either approves or disapproves with feedback
 - If disapprove, send review to implementation agent
 - Keep looping until review agent approves
+
+## Writing Tests
+
+- Avoid writing **change-detector tests**. See https://testing.googleblog.com/2015/01/testing-on-toilet-change-detector-tests.html
