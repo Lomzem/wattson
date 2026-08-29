@@ -24,10 +24,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Test lint
-        run: bunx eslint .
-
-      - name: Test format
-        run: bunx prettier --check .
+        run: bun run lint
 
       - name: Configure GitHub Pages
         if: github.event_name != 'pull_request'
