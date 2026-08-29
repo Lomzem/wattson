@@ -1,14 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { isRecoveryDraft, RECOVERY_VERSION } from './recovery';
+import { Schema } from 'effect';
+import { RecoveryDraft, RECOVERY_VERSION } from './recovery';
 
 describe('recovery codec', () => {
 	it('accepts the current minimal draft and rejects stale data', () => {
+		const isRecoveryDraft = Schema.is(RecoveryDraft);
 		expect(
 			isRecoveryDraft({
 				filename: 'tree.yaml',
 				source: 'rails: []\n',
 				baseSource: 'rails: []\n',
-				baseFingerprint: 'abc',
 				timestamp: 1,
 				version: RECOVERY_VERSION
 			})

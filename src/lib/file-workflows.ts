@@ -15,6 +15,12 @@ export const readHandle = (handle: FileSystemFileHandle) =>
 		catch: (error) => new FileWorkflowError({ operation: 'read', message: String(error) })
 	});
 
+export const readFile = (file: File) =>
+	Effect.tryPromise({
+		try: () => file.text(),
+		catch: (error) => new FileWorkflowError({ operation: 'read', message: String(error) })
+	});
+
 export const writeHandle = (handle: FileSystemFileHandle, source: string) =>
 	Effect.tryPromise({
 		try: async () => {

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
+	import type { Attachment } from 'svelte/attachments';
 	import { createHotkey } from '@tanstack/svelte-hotkeys';
 	import { Effect } from 'effect';
 	import { CaretDown, DownloadSimple, Plus, Warning, DotsThree, Moon, Sun } from 'phosphor-svelte';
@@ -28,7 +29,7 @@
 		type PowerNode
 	} from '$lib/power-document';
 	import { RECOVERY_VERSION, recoveryService, type RecoveryDraft } from '$lib/recovery';
-	import { readHandle, writeHandle } from '$lib/file-workflows';
+	import { readFile, readHandle, writeHandle } from '$lib/file-workflows';
 
 	type PickerWindow = Window & {
 		showOpenFilePicker?: (options: object) => Promise<FileSystemFileHandle[]>;
@@ -60,9 +61,14 @@
 	let linkCancelButton = $state<HTMLButtonElement | null>(null);
 	let input: HTMLInputElement;
 	let rawTextarea = $state<HTMLTextAreaElement | null>(null);
-	let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+	const fileInput: Attachment<HTMLInputElement> = (node) => {
+		input = node;
+	};
 
 	const dirty = $derived(Boolean(parsed && parsed.source !== baseSource));
+	const visibleLinkFeedback = $derived(
+		linkFeedback?.linkedSource && parsed?.source !== linkFeedback.linkedSource ? null : linkFeedback
+	);
 	const directAccess = $derived(
 		typeof window !== 'undefined' && Boolean((window as PickerWindow).showSaveFilePicker)
 	);
@@ -238,13 +244,6 @@
 		]
 	};
 
-	function fingerprint(source: string) {
-		let hash = 2166136261;
-		for (let index = 0; index < source.length; index++)
-			hash = Math.imul(hash ^ source.charCodeAt(index), 16777619);
-		return (hash >>> 0).toString(16);
-	}
-
 	function setDocument(
 		next: ParsedPowerDocument,
 		name: string,
@@ -265,8 +264,15 @@
 	async function openFile(file: File, fileHandle?: FileSystemFileHandle) {
 		if (!/\.ya?ml$/i.test(file.name)) return;
 		try {
-			setDocument(parsePowerDocument(await file.text()), file.name, fileHandle);
-			await Effect.runPromise(recoveryService.clear).catch(() => undefined);
+			const next = await Effect.runPromise(
+				Effect.gen(function* () {
+					const source = yield* readFile(file);
+					const document = yield* Effect.try(() => parsePowerDocument(source));
+					yield* recoveryService.clear.pipe(Effect.ignore);
+					return document;
+				})
+			);
+			setDocument(next, file.name, fileHandle);
 		} catch (error) {
 			window.alert(`Cannot open YAML: ${error instanceof Error ? error.message : error}`);
 		}
@@ -306,19 +312,29 @@
 
 	async function writeDirect(target: FileSystemFileHandle, overwrite = false) {
 		if (!parsed) return;
-		const disk = await Effect.runPromise(readHandle(target));
-		if (!overwrite && disk !== baseSource && parsed.source !== baseSource) {
+		const source = parsed.source;
+		const previousBase = baseSource;
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const disk = yield* readHandle(target);
+				if (!overwrite && disk !== previousBase && source !== previousBase)
+					return { action: 'conflict' } as const;
+				if (!overwrite && disk !== previousBase) return { action: 'refresh', disk } as const;
+				yield* writeHandle(target, source);
+				yield* recoveryService.clear.pipe(Effect.ignore);
+				return { action: 'written' } as const;
+			})
+		);
+		if (result.action === 'conflict') {
 			conflictOpen = true;
 			return;
 		}
-		if (!overwrite && disk !== baseSource) {
-			setDocument(parsePowerDocument(disk), target.name, target);
+		if (result.action === 'refresh') {
+			setDocument(parsePowerDocument(result.disk), target.name, target);
 			return;
 		}
-		await Effect.runPromise(writeHandle(target, parsed.source));
 		handle = target;
-		baseSource = parsed.source;
-		await Effect.runPromise(recoveryService.clear).catch(() => undefined);
+		baseSource = source;
 	}
 
 	async function saveCommand() {
@@ -692,7 +708,6 @@
 				filename,
 				source: parsed.source,
 				baseSource,
-				baseFingerprint: fingerprint(baseSource),
 				handle,
 				timestamp: Date.now(),
 				version: RECOVERY_VERSION
@@ -822,19 +837,12 @@
 		);
 
 	$effect(() => {
-		if (linkFeedback?.linkedSource && parsed?.source !== linkFeedback.linkedSource) {
-			linkFeedback = null;
-		}
-	});
-
-	$effect(() => {
 		if (!dirty) {
 			if (parsed) void Effect.runPromise(recoveryService.clear).catch(() => undefined);
 			return;
 		}
-		clearTimeout(recoveryTimer);
-		recoveryTimer = setTimeout(saveRecovery, 700);
-		return () => clearTimeout(recoveryTimer);
+		const timer = setTimeout(saveRecovery, 700);
+		return () => clearTimeout(timer);
 	});
 
 	onMount(() => {
@@ -871,7 +879,7 @@
 
 <input
 	class="sr-only"
-	bind:this={input}
+	{@attach fileInput}
 	type="file"
 	tabindex="-1"
 	aria-label="YAML file input"
@@ -1133,7 +1141,7 @@
 						</DropdownMenu.Root></Card.Action
 					>
 				</Card.Header>
-				{#if linkMode || linkFeedback}
+				{#if linkMode || visibleLinkFeedback}
 					<div
 						class="link-status-bar"
 						class:link-status-error={Boolean(linkError)}
@@ -1141,7 +1149,9 @@
 						aria-live={linkError ? 'assertive' : 'polite'}
 					>
 						<div class="min-w-0">
-							<p class="font-medium">{linkMode ? linkInstruction() : linkFeedback?.message}</p>
+							<p class="font-medium">
+								{linkMode ? linkInstruction() : visibleLinkFeedback?.message}
+							</p>
 							{#if linkError}<p class="mt-1 text-sm text-destructive">{linkError}</p>{/if}
 						</div>
 						{#if linkMode}
@@ -1152,7 +1162,7 @@
 								size="sm"
 								onclick={() => cancelLink()}>Cancel</Button
 							>
-						{:else if linkFeedback?.undoSource}
+						{:else if visibleLinkFeedback?.undoSource}
 							<Button variant="outline" size="sm" onclick={undoLink}>Undo</Button>
 						{/if}
 					</div>

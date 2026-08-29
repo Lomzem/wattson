@@ -1,4 +1,4 @@
-import { Data, Effect } from 'effect';
+import { Data } from 'effect';
 import { isScalar, parseDocument, stringify, type Document, type Node } from 'yaml';
 
 export type Kind = 'source' | 'regulator' | 'rail' | 'load';
@@ -58,8 +58,8 @@ function makeNode(kind: Kind, index: number, data: Record<string, unknown>, base
 			'nominal' in voltage
 				? [...base, 'voltage', 'nominal']
 				: firstPath(base, data, ['nominal_voltage']);
-		paths.min = 'min' in voltage ? [...base, 'voltage', 'min'] : [...base, 'voltage', 'min'];
-		paths.max = 'max' in voltage ? [...base, 'voltage', 'max'] : [...base, 'voltage', 'max'];
+		paths.min = [...base, 'voltage', 'min'];
+		paths.max = [...base, 'voltage', 'max'];
 	} else if (kind === 'rail') {
 		paths.nominal = firstPath(base, data, ['nominal_voltage', 'voltage']);
 		paths.min = [...base, 'min_voltage'];
@@ -253,13 +253,6 @@ export function parsePowerDocument(source: string): ParsedPowerDocument {
 	};
 	return { source, document, model: { ...bare, issues: validate(bare) } };
 }
-
-export const parsePowerDocumentEffect = (source: string) =>
-	Effect.try({
-		try: () => parsePowerDocument(source),
-		catch: (error) =>
-			error instanceof YamlDocumentError ? error : new YamlDocumentError({ message: String(error) })
-	});
 
 function scalarText(value: string | number, node: Node): string {
 	if (typeof value === 'number') return String(value);

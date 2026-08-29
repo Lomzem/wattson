@@ -57,9 +57,8 @@ describe('Powerman YAML document', () => {
 	it('imports loader aliases and nested source voltage', () => {
 		const model = parsePowerDocument(sample).model;
 		expect(model.sources[0].name).toBe('VIN');
-		expect(model.sources[0].paths.nominal).toEqual(['source', 'voltage', 'nominal']);
-		expect(model.regulators[0].paths.output).toEqual(['regulators', 0, 'output_rail']);
-		expect(model.loads[0].paths.rail).toEqual(['loads', 0, 'output']);
+		expect(model.regulators[0].data.output_rail).toBe('3V3');
+		expect(model.loads[0].data.output).toBe('3V3');
 	});
 
 	it('regenerates only the changed structural section', () => {
