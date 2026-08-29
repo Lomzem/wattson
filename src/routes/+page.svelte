@@ -2,16 +2,7 @@
 	import { onMount } from 'svelte';
 	import { createHotkey } from '@tanstack/svelte-hotkeys';
 	import { Effect } from 'effect';
-	import {
-		CaretDown,
-		DownloadSimple,
-		FileArrowUp,
-		Plus,
-		Warning,
-		DotsThree,
-		Moon,
-		Sun
-	} from 'phosphor-svelte';
+	import { CaretDown, DownloadSimple, Plus, Warning, DotsThree, Moon, Sun } from 'phosphor-svelte';
 	import { mode, setMode } from 'mode-watcher';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
@@ -66,6 +57,15 @@
 	const dirty = $derived(Boolean(parsed && parsed.source !== baseSource));
 	const directAccess = $derived(
 		typeof window !== 'undefined' && Boolean((window as PickerWindow).showSaveFilePicker)
+	);
+	const hasTopologyEntities = $derived(
+		Boolean(
+			parsed &&
+			(parsed.model.sources.length ||
+				parsed.model.regulators.length ||
+				parsed.model.rails.length ||
+				parsed.model.loads.length)
+		)
 	);
 	const currentNode = $derived.by(() => {
 		if (!parsed || !selected) return undefined;
@@ -133,7 +133,7 @@
 		{ action: 'Open File', keys: ['Ctrl', 'O'] },
 		{ action: 'Save / Download', keys: ['Ctrl', 'S'] },
 		...(directAccess ? [{ action: 'Save As', keys: ['Ctrl', 'Shift', 'S'] }] : []),
-		{ action: 'New YAML', keys: ['Ctrl', 'N'] },
+		{ action: 'New YAML', keys: ['Shift', 'N'] },
 		{ action: 'View Raw YAML', keys: ['Ctrl', 'Shift', 'Y'] }
 	]);
 	const topology = $derived.by(() => {
@@ -311,6 +311,7 @@
 
 	async function saveCommand() {
 		if (!parsed) return;
+		if (handle && !dirty) return;
 		if (handle) await writeDirect(handle).catch((error) => window.alert(`Save failed: ${error}`));
 		else download();
 	}
@@ -415,16 +416,25 @@
 				layout: node.kind,
 				items: [
 					{
+						key: 'min',
+						label: 'Min',
+						value: voltage.min === undefined ? '-' : `${compactNumber(voltage.min)} V`
+					},
+					{
 						key: 'nominal',
 						label: 'Nominal',
-						value: voltage.nominal ?? data.nominal_voltage,
+						value:
+							(voltage.nominal ?? data.nominal_voltage) === undefined
+								? '-'
+								: `${compactNumber(voltage.nominal ?? data.nominal_voltage)} V`,
 						primary: true
 					},
-					{ key: 'min', label: 'Min', value: voltage.min },
-					{ key: 'max', label: 'Max', value: voltage.max }
+					{
+						key: 'max',
+						label: 'Max',
+						value: voltage.max === undefined ? '-' : `${compactNumber(voltage.max)} V`
+					}
 				]
-					.filter((metric) => metric.value !== undefined)
-					.map((metric) => ({ ...metric, value: `${compactNumber(metric.value)} V` }))
 			};
 		}
 		if (node.kind === 'rail') {
@@ -432,16 +442,25 @@
 				layout: node.kind,
 				items: [
 					{
+						key: 'min',
+						label: 'Min',
+						value: data.min_voltage === undefined ? '-' : `${compactNumber(data.min_voltage)} V`
+					},
+					{
 						key: 'nominal',
 						label: 'Nominal',
-						value: data.nominal_voltage ?? data.voltage,
+						value:
+							(data.nominal_voltage ?? data.voltage) === undefined
+								? '-'
+								: `${compactNumber(data.nominal_voltage ?? data.voltage)} V`,
 						primary: true
 					},
-					{ key: 'min', label: 'Min', value: data.min_voltage },
-					{ key: 'max', label: 'Max', value: data.max_voltage }
+					{
+						key: 'max',
+						label: 'Max',
+						value: data.max_voltage === undefined ? '-' : `${compactNumber(data.max_voltage)} V`
+					}
 				]
-					.filter((metric) => metric.value !== undefined)
-					.map((metric) => ({ ...metric, value: `${compactNumber(metric.value)} V` }))
 			};
 		}
 		if (node.kind === 'regulator') {
@@ -528,7 +547,6 @@
 
 	function closeComponentSheet() {
 		componentDraft = {};
-		cancelPending = false;
 		selected = null;
 	}
 
@@ -544,8 +562,15 @@
 	}
 
 	function cancelComponentEdit() {
+		cancelPending = true;
 		if (parsed && sheetSourceBefore) parsed = parsePowerDocument(sheetSourceBefore);
 		closeComponentSheet();
+		setTimeout(() => (cancelPending = false));
+	}
+
+	function escapeComponentEdit(event: KeyboardEvent) {
+		event.preventDefault();
+		cancelComponentEdit();
 	}
 
 	function addNode(kind: Kind) {
@@ -666,7 +691,13 @@
 	createHotkey('Mod+O', openCommand, { preventDefault: true, ignoreInputs: true });
 	createHotkey('Mod+S', saveCommand, { preventDefault: true, ignoreInputs: true });
 	createHotkey('Mod+Shift+S', saveAsCommand, { preventDefault: true, ignoreInputs: true });
-	createHotkey('Mod+N', newCommand, { preventDefault: true, ignoreInputs: true });
+	createHotkey(
+		'Shift+N',
+		() => {
+			if (canUseTopologyShortcut()) newCommand();
+		},
+		() => ({ enabled: Boolean(parsed), preventDefault: true, ignoreInputs: true })
+	);
 	createHotkey('Mod+Shift+Y', openRaw, { preventDefault: true, ignoreInputs: true });
 	for (const [hotkey, kind] of [
 		['S', 'source'],
@@ -801,17 +832,13 @@
 			if (file) void openFile(file);
 		}}
 	>
-		<Card.Root class="w-full max-w-md text-center" aria-labelledby="product-name">
-			<Card.Header class="items-center">
-				<h1 id="product-name" class="text-2xl font-semibold">Wattson</h1>
-			</Card.Header>
-			<Card.Content class="flex flex-wrap justify-center gap-2">
-				<Button onclick={openCommand}><FileArrowUp /> Open YAML</Button><Button
-					variant="outline"
-					onclick={newCommand}>New YAML</Button
-				>
-			</Card.Content>
-		</Card.Root>
+		<div class="flex flex-col items-center gap-4 text-center">
+			<h1 id="product-name" class="text-2xl font-semibold">Wattson</h1>
+			<div class="flex items-center justify-center gap-2">
+				<Button variant="outline" onclick={openCommand}>Open YAML</Button>
+				<Button onclick={newCommand}>New YAML</Button>
+			</div>
+		</div>
 		<div class="absolute top-4 right-4 sm:top-6 sm:right-6">{@render themeToggle()}</div>
 	</main>
 {:else}
@@ -844,8 +871,8 @@
 						<Tooltip.Content role="tooltip">{validationIssueLabel}</Tooltip.Content>
 					</Tooltip.Root>
 				</Tooltip.Provider>{/if}
-			<Button size="sm" onclick={saveCommand}
-				>{#if handle}Save{:else}<DownloadSimple /> Download{/if}</Button
+			<Button size="sm" onclick={saveCommand} disabled={Boolean(handle && !dirty)}
+				>{#if handle}{dirty ? 'Save' : 'Saved'}{:else}<DownloadSimple /> Download{/if}</Button
 			>
 			{@render themeToggle()}
 			<DropdownMenu.Root>
@@ -856,23 +883,47 @@
 						>
 					{/snippet}
 				</DropdownMenu.Trigger>
-				<DropdownMenu.Content align="end" class="min-w-44">
-					<DropdownMenu.Item class="whitespace-nowrap" onclick={openCommand}
-						>Open File</DropdownMenu.Item
+				<DropdownMenu.Content align="end" class="w-60">
+					<DropdownMenu.Item
+						class="grid grid-cols-[minmax(0,1fr)_auto] gap-4 whitespace-nowrap"
+						onclick={newCommand}
 					>
-					{#if directAccess}<DropdownMenu.Item class="whitespace-nowrap" onclick={saveAsCommand}
-							>Save As</DropdownMenu.Item
-						>{/if}
+						<span>New YAML</span>
+						<Kbd.Group class="justify-self-end" aria-hidden="true">
+							<Kbd.Root>Shift</Kbd.Root><Kbd.Root>N</Kbd.Root>
+						</Kbd.Group>
+					</DropdownMenu.Item>
+					<DropdownMenu.Item
+						class="grid grid-cols-[minmax(0,1fr)_auto] gap-4 whitespace-nowrap"
+						onclick={openCommand}
+					>
+						<span>Open File</span>
+						<Kbd.Group class="justify-self-end" aria-hidden="true">
+							<Kbd.Root>Ctrl</Kbd.Root><Kbd.Root>O</Kbd.Root>
+						</Kbd.Group>
+					</DropdownMenu.Item>
+					{#if directAccess}<DropdownMenu.Item
+							class="grid grid-cols-[minmax(0,1fr)_auto] gap-4 whitespace-nowrap"
+							onclick={saveAsCommand}
+						>
+							<span>Save As</span>
+							<Kbd.Group class="justify-self-end" aria-hidden="true">
+								<Kbd.Root>Ctrl</Kbd.Root><Kbd.Root>Shift</Kbd.Root><Kbd.Root>S</Kbd.Root>
+							</Kbd.Group>
+						</DropdownMenu.Item>{/if}
 					<DropdownMenu.Separator />
-					<DropdownMenu.Item class="whitespace-nowrap" onclick={openRaw}
-						>View Raw YAML</DropdownMenu.Item
+					<DropdownMenu.Item
+						class="grid grid-cols-[minmax(0,1fr)_auto] gap-4 whitespace-nowrap"
+						onclick={openRaw}
 					>
+						<span>View Raw YAML</span>
+						<Kbd.Group class="justify-self-end" aria-hidden="true">
+							<Kbd.Root>Ctrl</Kbd.Root><Kbd.Root>Shift</Kbd.Root><Kbd.Root>Y</Kbd.Root>
+						</Kbd.Group>
+					</DropdownMenu.Item>
+					<DropdownMenu.Separator />
 					<DropdownMenu.Item class="whitespace-nowrap" onclick={() => (shortcutsOpen = true)}
 						>Keyboard Shortcuts</DropdownMenu.Item
-					>
-					<DropdownMenu.Separator />
-					<DropdownMenu.Item class="whitespace-nowrap" onclick={newCommand}
-						>New YAML</DropdownMenu.Item
 					>
 				</DropdownMenu.Content>
 			</DropdownMenu.Root>
@@ -880,7 +931,7 @@
 
 		<main class="mx-auto max-w-[1500px] px-4 py-8 sm:px-8 sm:py-12">
 			<Card.Root>
-				<Card.Header class="border-b">
+				<Card.Header class={hasTopologyEntities ? 'border-b' : undefined}>
 					<Card.Title><h1>Topology</h1></Card.Title>
 					<Card.Action
 						><DropdownMenu.Root>
@@ -902,124 +953,124 @@
 						</DropdownMenu.Root></Card.Action
 					>
 				</Card.Header>
-				<Card.Content>
-					<nav aria-label="Topology" class="topology">
-						{#if topology.conversions.length}
-							<section aria-labelledby="conversion-paths">
-								<div class="topology-heading">
-									<h2 id="conversion-paths">Conversion paths</h2>
-									<span>{topology.conversions.length}</span>
-								</div>
-								<ol class="power-paths">
-									{#each topology.conversions as conversion (`regulator:${conversion.regulator.index}`)}
-										<li class="power-path" data-path={conversion.regulator.name}>
-											<div class="path-stage">
-												<span class="stage-label">Input rails</span>
-												<div class="branch-stack input-branches">
-													{#each conversion.inputs as inputReference (inputReference.port)}
-														<div class="branch-item">
-															<span class="port-label">{inputReference.port}</span>
-															{#if inputReference.node}
-																{@render topologyNode(
-																	inputReference.node,
-																	`${conversion.regulator.name} input`
-																)}
-															{:else}
-																<span class="missing-reference"
-																	>{inputReference.name || 'Missing input'}</span
-																>
-															{/if}
-														</div>
-													{/each}
-												</div>
-											</div>
-											<span class="path-link" aria-hidden="true"></span>
-											<div class="path-stage">
-												<span class="stage-label">Regulator</span>
-												{@render topologyNode(conversion.regulator, 'conversion')}
-											</div>
-											<span class="path-link" aria-hidden="true"></span>
-											<div class="path-stage">
-												<span class="stage-label">Output rail</span>
-												{#if conversion.output}
-													{@render topologyNode(
-														conversion.output,
-														`${conversion.regulator.name} output`
-													)}
-												{:else}
-													<span class="missing-reference"
-														>{conversion.outputName || 'Missing output'}</span
-													>
-												{/if}
-											</div>
-											<span class="path-link" aria-hidden="true"></span>
-											<div class="path-stage">
-												<span class="stage-label">Connected loads</span>
-												{#if conversion.loads.length}
-													<div class="branch-stack load-branches">
-														{#each conversion.loads as load (`load:${load.index}`)}
+				{#if hasTopologyEntities}<Card.Content>
+						<nav aria-label="Topology" class="topology">
+							{#if topology.conversions.length}
+								<section aria-labelledby="conversion-paths">
+									<div class="topology-heading">
+										<h2 id="conversion-paths">Conversion paths</h2>
+										<span>{topology.conversions.length}</span>
+									</div>
+									<ol class="power-paths">
+										{#each topology.conversions as conversion (`regulator:${conversion.regulator.index}`)}
+											<li class="power-path" data-path={conversion.regulator.name}>
+												<div class="path-stage">
+													<span class="stage-label">Input rails</span>
+													<div class="branch-stack input-branches">
+														{#each conversion.inputs as inputReference (inputReference.port)}
 															<div class="branch-item">
-																{@render topologyNode(load, `${conversion.outputName} load`)}
+																<span class="port-label">{inputReference.port}</span>
+																{#if inputReference.node}
+																	{@render topologyNode(
+																		inputReference.node,
+																		`${conversion.regulator.name} input`
+																	)}
+																{:else}
+																	<span class="missing-reference"
+																		>{inputReference.name || 'Missing input'}</span
+																	>
+																{/if}
 															</div>
 														{/each}
 													</div>
-												{:else}
-													<span class="empty-branch">No loads</span>
-												{/if}
-											</div>
-										</li>
-									{/each}
-								</ol>
-							</section>
-						{/if}
-
-						{#if topology.direct.length}
-							<section class="topology-section" aria-labelledby="direct-branches">
-								<div class="topology-heading">
-									<h2 id="direct-branches">Direct rail branches</h2>
-									<span>{topology.direct.length}</span>
-								</div>
-								<ul class="direct-paths">
-									{#each topology.direct as branch (`direct:${branch.rail.kind}:${branch.rail.index}`)}
-										<li class="direct-path">
-											<div class="path-stage">
-												<span class="stage-label">Source or rail</span>{@render topologyNode(
-													branch.rail,
-													'direct feed'
-												)}
-											</div>
-											<span class="path-link" aria-hidden="true"></span>
-											<div class="path-stage">
-												<span class="stage-label">Connected loads</span>
-												<div class="branch-stack load-branches">
-													{#each branch.loads as load (`load:${load.index}`)}<div
-															class="branch-item"
-														>
-															{@render topologyNode(load, `${branch.rail.name} load`)}
-														</div>{/each}
 												</div>
-											</div>
-										</li>
-									{/each}
-								</ul>
-							</section>
-						{/if}
+												<span class="path-link" aria-hidden="true"></span>
+												<div class="path-stage">
+													<span class="stage-label">Regulator</span>
+													{@render topologyNode(conversion.regulator, 'conversion')}
+												</div>
+												<span class="path-link" aria-hidden="true"></span>
+												<div class="path-stage">
+													<span class="stage-label">Output rail</span>
+													{#if conversion.output}
+														{@render topologyNode(
+															conversion.output,
+															`${conversion.regulator.name} output`
+														)}
+													{:else}
+														<span class="missing-reference"
+															>{conversion.outputName || 'Missing output'}</span
+														>
+													{/if}
+												</div>
+												<span class="path-link" aria-hidden="true"></span>
+												<div class="path-stage">
+													<span class="stage-label">Connected loads</span>
+													{#if conversion.loads.length}
+														<div class="branch-stack load-branches">
+															{#each conversion.loads as load (`load:${load.index}`)}
+																<div class="branch-item">
+																	{@render topologyNode(load, `${conversion.outputName} load`)}
+																</div>
+															{/each}
+														</div>
+													{:else}
+														<span class="empty-branch">No loads</span>
+													{/if}
+												</div>
+											</li>
+										{/each}
+									</ol>
+								</section>
+							{/if}
 
-						{#if topology.unlinked.length}
-							<section class="topology-section" aria-labelledby="unlinked-entities">
-								<div class="topology-heading">
-									<h2 id="unlinked-entities">Unlinked entities</h2>
-									<span>{topology.unlinked.length}</span>
-								</div>
-								<ul class="unlinked-list">
-									{#each topology.unlinked as node (`${node.kind}:${node.index}`)}<li>
-											{@render topologyNode(node, 'unlinked')}
-										</li>{/each}
-								</ul>
-							</section>
-						{/if}
-					</nav>
-				</Card.Content>
+							{#if topology.direct.length}
+								<section class="topology-section" aria-labelledby="direct-branches">
+									<div class="topology-heading">
+										<h2 id="direct-branches">Direct rail branches</h2>
+										<span>{topology.direct.length}</span>
+									</div>
+									<ul class="direct-paths">
+										{#each topology.direct as branch (`direct:${branch.rail.kind}:${branch.rail.index}`)}
+											<li class="direct-path">
+												<div class="path-stage">
+													<span class="stage-label">Source or rail</span>{@render topologyNode(
+														branch.rail,
+														'direct feed'
+													)}
+												</div>
+												<span class="path-link" aria-hidden="true"></span>
+												<div class="path-stage">
+													<span class="stage-label">Connected loads</span>
+													<div class="branch-stack load-branches">
+														{#each branch.loads as load (`load:${load.index}`)}<div
+																class="branch-item"
+															>
+																{@render topologyNode(load, `${branch.rail.name} load`)}
+															</div>{/each}
+													</div>
+												</div>
+											</li>
+										{/each}
+									</ul>
+								</section>
+							{/if}
+
+							{#if topology.unlinked.length}
+								<section class="topology-section" aria-labelledby="unlinked-entities">
+									<div class="topology-heading">
+										<h2 id="unlinked-entities">Unlinked entities</h2>
+										<span>{topology.unlinked.length}</span>
+									</div>
+									<ul class="unlinked-list">
+										{#each topology.unlinked as node (`${node.kind}:${node.index}`)}<li>
+												{@render topologyNode(node, 'unlinked')}
+											</li>{/each}
+									</ul>
+								</section>
+							{/if}
+						</nav>
+					</Card.Content>{/if}
 			</Card.Root>
 		</main>
 	</div>
@@ -1053,7 +1104,7 @@
 		if (!open) closeComponentSheet();
 	}}
 >
-	<Sheet.Content class="overflow-y-auto sm:max-w-md">
+	<Sheet.Content class="overflow-y-auto sm:max-w-md" onEscapeKeydown={escapeComponentEdit}>
 		{#if currentNode}
 			{@const editedNode = currentNode}
 			<form class="contents" onsubmit={submitComponentEdit}>

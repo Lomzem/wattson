@@ -353,9 +353,7 @@ export function replaceSection(
 }
 
 export function canonicalDocument(): ParsedPowerDocument {
-	return parsePowerDocument(
-		'source:\n  name: VIN\n  voltage:\n    nominal: 12\n\nrails: []\nregulators: []\nloads: []\n'
-	);
+	return parsePowerDocument('');
 }
 
 export function sectionData(parsed: ParsedPowerDocument, key: string): unknown {

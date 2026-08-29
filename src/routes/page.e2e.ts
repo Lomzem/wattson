@@ -11,18 +11,33 @@ test('creates, edits, validates raw YAML, and labels fallback download', async (
 		Object.defineProperty(window, 'showSaveFilePicker', { configurable: true, value: undefined });
 	});
 	await page.goto('/');
-	const firstRunCard = page.locator('[data-slot="card"]');
-	const firstRunHeader = firstRunCard.locator('[data-slot="card-header"]');
-	const firstRunActions = firstRunCard.locator('[data-slot="card-content"]');
+	const firstRun = page.getByRole('main');
+	const firstRunActions = firstRun.locator('h1 + div');
 	await expect(page.getByRole('heading', { name: 'Wattson' })).toBeVisible();
-	await expect(firstRunHeader.locator('svg')).toHaveCount(0);
-	await expect(firstRunHeader).toHaveCSS('text-align', 'center');
+	await expect(firstRun.locator('[data-slot="card"]')).toHaveCount(0);
+	await expect(firstRunActions.locator('svg')).toHaveCount(0);
 	await expect(firstRunActions).toHaveCSS('justify-content', 'center');
-	await expect(firstRunActions).toHaveCSS('flex-wrap', 'wrap');
+	await expect(firstRunActions).toHaveCSS('flex-direction', 'row');
+	await expect(firstRunActions.getByRole('button')).toHaveText(['Open YAML', 'New YAML']);
+	await expect(page.getByRole('button', { name: 'New YAML', exact: true })).toHaveClass(
+		/bg-primary/
+	);
+	await expect(page.getByRole('button', { name: 'Open YAML', exact: true })).toHaveClass(
+		/border-border/
+	);
 	await expect(page.getByRole('button', { name: 'Open YAML', exact: true })).toBeVisible();
 	await expect(
 		page.getByRole('button', { name: 'Open YAML', exact: true }).locator('svg')
-	).toHaveCount(1);
+	).toHaveCount(0);
+	await page.setViewportSize({ width: 390, height: 844 });
+	const actionBoxes = await firstRunActions.getByRole('button').evaluateAll((buttons) =>
+		buttons.map((button) => ({
+			top: button.getBoundingClientRect().top,
+			height: button.clientHeight
+		}))
+	);
+	expect(actionBoxes[0].top).toBe(actionBoxes[1].top);
+	expect(actionBoxes[0].height).toBe(actionBoxes[1].height);
 	await expect(page.getByText('Powerman 5000 YAML, without the ceremony.')).toHaveCount(0);
 	await expect(page.getByText('Or drop one .yaml or .yml file anywhere.')).toHaveCount(0);
 	await expect(page.locator('meta[name="description"]')).toHaveCount(0);
@@ -39,18 +54,18 @@ test('creates, edits, validates raw YAML, and labels fallback download', async (
 	await expect(page.getByRole('button', { name: 'Open YAML', exact: true })).toHaveCount(0);
 	await page.getByRole('button', { name: 'More file actions' }).click();
 	await expect(page.getByRole('menuitem')).toHaveText([
-		'Open File',
-		'View Raw YAML',
-		'Keyboard Shortcuts',
-		'New YAML'
+		'New YAML ShiftN',
+		'Open File CtrlO',
+		'View Raw YAML CtrlShiftY',
+		'Keyboard Shortcuts'
 	]);
 	await expect(page.locator('[data-slot="dropdown-menu-content"] > *')).toHaveText([
-		'Open File',
+		'New YAML ShiftN',
+		'Open File CtrlO',
 		'',
-		'View Raw YAML',
-		'Keyboard Shortcuts',
+		'View Raw YAML CtrlShiftY',
 		'',
-		'New YAML'
+		'Keyboard Shortcuts'
 	]);
 	await expect(page.locator('[data-slot="dropdown-menu-separator"]')).toHaveCount(2);
 	await expect(page.getByRole('menuitem', { name: 'Save As' })).toHaveCount(0);
@@ -92,6 +107,7 @@ test('creates, edits, validates raw YAML, and labels fallback download', async (
 	await page.getByRole('button', { name: 'More file actions' }).click();
 	await page.getByRole('menuitem', { name: 'New YAML', exact: true }).click();
 	await expect(page.getByRole('button', { name: 'Download' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Download' })).toBeEnabled();
 	await expect(page.getByText('Add the first component to begin the topology.')).toHaveCount(0);
 	await expect(page.getByRole('button', { name: /Switch to (dark|light) mode/ })).toBeVisible();
 
@@ -114,13 +130,14 @@ test('creates, edits, validates raw YAML, and labels fallback download', async (
 	const name = page.getByRole('dialog').getByLabel('Name');
 	await name.fill('CORE');
 	await expect(page.getByRole('button', { name: /rail CORE/ })).toBeVisible();
-	await name.press('Escape');
+	await name.press('Enter');
 	await expect(page.locator('[role="dialog"][data-state="open"]')).toHaveCount(0);
 	expect(browserErrors).toEqual([]);
 	await expect(page.getByRole('button', { name: /CORE/ })).toBeVisible();
 	await page.getByRole('button', { name: 'More file actions' }).click();
 	await page.getByRole('menuitem', { name: 'View Raw YAML' }).click();
-	await expect(page.getByLabel('Raw YAML source')).toHaveValue(/CORE/);
+	const sourceBeforeEscape = await page.getByLabel('Raw YAML source').inputValue();
+	expect(sourceBeforeEscape).toContain('CORE');
 	await expect(page.getByText('Changes stay in this draft until you apply them.')).toHaveCount(0);
 	await expect(page.getByText('YAML draft', { exact: true })).toHaveCount(0);
 	await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
@@ -133,28 +150,20 @@ test('creates, edits, validates raw YAML, and labels fallback download', async (
 	expect(browserErrors).toEqual([]);
 	await page.getByRole('button', { name: 'More file actions' }).click();
 	await page.getByRole('menuitem', { name: 'View Raw YAML' }).click();
-	const sourceBeforeCancel = await page.getByLabel('Raw YAML source').inputValue();
-	expect(sourceBeforeCancel).toContain('nominal_voltage: 2.5');
+	await expect(page.getByLabel('Raw YAML source')).toHaveValue(sourceBeforeEscape);
 	await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
 	await page.getByRole('button', { name: /CORE/ }).click();
 	await page.locator('[role="dialog"][data-state="open"]').getByLabel('Name').fill('CANCELLED');
-	await page
-		.locator('[role="dialog"][data-state="open"]')
-		.getByLabel('Nominal voltage')
-		.fill('9.9');
-	await page
-		.locator('[role="dialog"][data-state="open"]')
-		.getByRole('button', { name: 'Cancel', exact: true })
-		.click();
+	await page.keyboard.press('Escape');
 	await expect(page.getByRole('button', { name: /CORE/ })).toBeVisible();
 	await expect(page.getByRole('button', { name: /CANCELLED/ })).toHaveCount(0);
 	await expect(page.getByText('rail properties', { exact: true })).toHaveCount(0);
 	await page.getByRole('button', { name: 'More file actions' }).click();
 	await page.getByRole('menuitem', { name: 'View Raw YAML' }).click();
-	await expect(page.getByLabel('Raw YAML source')).toHaveValue(sourceBeforeCancel);
+	await expect(page.getByLabel('Raw YAML source')).toHaveValue(sourceBeforeEscape);
 	await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
 	await page.getByRole('button', { name: /CORE/ }).click();
-	await expect(page.getByRole('dialog').getByLabel('Nominal voltage')).toHaveValue('2.5');
+	await expect(page.getByRole('dialog').getByLabel('Nominal voltage')).toHaveValue('3.3');
 	await page.getByRole('dialog').getByLabel('Name').fill('SAVED');
 	await page.getByRole('dialog').getByLabel('Nominal voltage').fill('3.3');
 	await page.getByRole('dialog').getByLabel('Nominal voltage').press('Enter');
@@ -165,7 +174,6 @@ test('creates, edits, validates raw YAML, and labels fallback download', async (
 	const raw = page.getByLabel('Raw YAML source');
 	await expect(raw).toHaveValue(/name: SAVED/);
 	await expect(raw).toHaveValue(/nominal_voltage: 3.3/);
-	expect(await raw.inputValue()).not.toContain('9.9');
 	await raw.fill('source: [');
 	await page.getByRole('button', { name: 'Apply' }).click();
 	await expect(page.getByRole('alert')).toBeVisible();
@@ -228,9 +236,9 @@ test('shows field metadata and compact topology values', async ({ page }) => {
 		mimeType: 'application/yaml',
 		buffer: Buffer.from(`source:
   name: VIN_INPUT_CONNECTOR_WITH_A_VERY_LONG_ENGINEERING_IDENTIFIER
-  voltage: { min: 5, nominal: 5.05, max: 20 }
+  voltage: { min: 5, nominal: 123456789.12345, max: 20 }
 rails:
-  - { name: 3V3, nominal_voltage: 3.3, min_voltage: 3.0, max_voltage: 3.6 }
+  - { name: 3V3, nominal_voltage: 3.3, max_voltage: 3.6 }
 regulators:
   - { name: REG_3V3, input: VIN_INPUT_CONNECTOR_WITH_A_VERY_LONG_ENGINEERING_IDENTIFIER, output: 3V3, efficiency: 0.9, max_output_current: 3.0 }
 loads:
@@ -245,11 +253,13 @@ loads:
 	const regulator = page.getByRole('button', { name: /^regulator REG_3V3/ });
 	const rail = page.getByRole('button', { name: /^rail 3V3/ });
 	const load = page.getByRole('button', { name: /^load LED_RED_WITH/ });
-	await expect(source.locator('[data-metric="nominal"]')).toContainText('Nominal 5.05 V');
 	await expect(source.locator('[data-metric="min"]')).toContainText('Min 5 V');
+	await expect(source.locator('[data-metric="nominal"]')).toContainText(
+		'Nominal 123456789.12345 V'
+	);
 	await expect(source.locator('[data-metric="max"]')).toContainText('Max 20 V');
+	await expect(rail.locator('[data-metric="min"]')).toContainText('Min -');
 	await expect(rail.locator('[data-metric="nominal"]')).toContainText('Nominal 3.3 V');
-	await expect(rail.locator('[data-metric="min"]')).toContainText('Min 3 V');
 	await expect(rail.locator('[data-metric="max"]')).toContainText('Max 3.6 V');
 	await expect(regulator.locator('[data-metric="efficiency"]')).toContainText('Efficiency 90%');
 	await expect(regulator.locator('[data-metric="current-limit"]')).toContainText(
@@ -271,6 +281,36 @@ loads:
 	expect(topologySizing.scrollWidth).toBeLessThanOrEqual(topologySizing.clientWidth);
 	expect(topologySizing.ellipsis).toBe(false);
 	expect(topologySizing.wrappedNames).toBe(true);
+	for (const viewport of [
+		{ width: 1280, height: 800 },
+		{ width: 390, height: 844 }
+	]) {
+		await page.setViewportSize(viewport);
+		for (const node of [source, rail]) {
+			const metricLayout = await node.locator('.node-metrics').evaluate((metrics) => {
+				const items = [...metrics.querySelectorAll<HTMLElement>('.node-metric')];
+				return {
+					order: items.map((item) => item.dataset.metric),
+					tops: items.map((item) => item.getBoundingClientRect().top),
+					heights: items.map((item) => item.getBoundingClientRect().height),
+					labelTops: items.map((item) => item.querySelector('dt')!.getBoundingClientRect().top),
+					valueTops: items.map((item) => item.querySelector('dd')!.getBoundingClientRect().top),
+					lefts: items.map((item) => item.getBoundingClientRect().left),
+					fits:
+						metrics.scrollWidth <= metrics.clientWidth &&
+						items.every((item) => item.scrollWidth <= item.clientWidth)
+				};
+			});
+			expect(metricLayout.order).toEqual(['min', 'nominal', 'max']);
+			expect(new Set(metricLayout.tops).size).toBe(1);
+			expect(new Set(metricLayout.heights).size).toBe(1);
+			expect(new Set(metricLayout.labelTops).size).toBe(1);
+			expect(new Set(metricLayout.valueTops).size).toBe(1);
+			expect(metricLayout.lefts[0]).toBeLessThan(metricLayout.lefts[1]);
+			expect(metricLayout.lefts[1]).toBeLessThan(metricLayout.lefts[2]);
+			expect(metricLayout.fits).toBe(true);
+		}
+	}
 
 	await source.click();
 	for (const label of ['Nominal voltage', 'Minimum voltage', 'Maximum voltage']) {
@@ -280,7 +320,9 @@ loads:
 	}
 	for (const attribute of ['step', 'min', 'max'])
 		await expect(page.getByRole('dialog').getByLabel('Name')).not.toHaveAttribute(attribute);
-	await expect(page.getByRole('dialog').getByLabel('Nominal voltage')).toHaveValue('5.05');
+	await expect(page.getByRole('dialog').getByLabel('Nominal voltage')).toHaveValue(
+		'123456789.12345'
+	);
 	await page.keyboard.press('Escape');
 
 	await regulator.click();
@@ -378,23 +420,40 @@ test('shows only direct file actions when a writable handle is available', async
 	await page.goto('/');
 	await page.getByRole('button', { name: 'Open YAML', exact: true }).click();
 
-	await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeVisible();
+	const savedButton = page.getByRole('button', { name: 'Saved', exact: true });
+	await expect(savedButton).toBeVisible();
+	await expect(savedButton).toBeDisabled();
+
+	await page.getByRole('button', { name: 'More file actions' }).click();
+	await page.getByRole('menuitem', { name: 'View Raw YAML' }).click();
+	await page
+		.getByLabel('Raw YAML source')
+		.fill(
+			'source: { name: EDITED, voltage: { nominal: 12 } }\nrails: []\nregulators: []\nloads: []\n'
+		);
+	await page.getByRole('button', { name: 'Apply' }).click();
+	const saveButton = page.getByRole('button', { name: 'Save', exact: true });
+	await expect(saveButton).toBeEnabled();
+	await expect(saveButton).toHaveClass(/bg-primary/);
+	await saveButton.click();
+	await expect(savedButton).toBeDisabled();
+
 	await page.getByRole('button', { name: 'More file actions' }).click();
 	await expect(page.getByRole('menuitem')).toHaveText([
-		'Open File',
-		'Save As',
-		'View Raw YAML',
-		'Keyboard Shortcuts',
-		'New YAML'
+		'New YAML ShiftN',
+		'Open File CtrlO',
+		'Save As CtrlShiftS',
+		'View Raw YAML CtrlShiftY',
+		'Keyboard Shortcuts'
 	]);
 	await expect(page.locator('[data-slot="dropdown-menu-content"] > *')).toHaveText([
-		'Open File',
-		'Save As',
+		'New YAML ShiftN',
+		'Open File CtrlO',
+		'Save As CtrlShiftS',
 		'',
-		'View Raw YAML',
-		'Keyboard Shortcuts',
+		'View Raw YAML CtrlShiftY',
 		'',
-		'New YAML'
+		'Keyboard Shortcuts'
 	]);
 	await expect(page.locator('[data-slot="dropdown-menu-separator"]')).toHaveCount(2);
 	await expect(page.getByRole('menuitem', { name: 'Download' })).toHaveCount(0);
@@ -416,15 +475,91 @@ test('keeps overflow action labels on one line at desktop and mobile widths', as
 		await page.getByRole('button', { name: 'More file actions' }).click();
 
 		const menu = page.locator('[data-slot="dropdown-menu-content"]');
-		expect((await menu.boundingBox())!.width).toBeLessThanOrEqual(224);
-		for (const name of ['View Raw YAML', 'Keyboard Shortcuts']) {
+		expect((await menu.boundingBox())!.width).toBeLessThanOrEqual(240);
+		for (const name of ['New YAML', 'Open File', 'View Raw YAML', 'Keyboard Shortcuts']) {
 			const item = page.getByRole('menuitem', { name });
 			await expect(item).toHaveCSS('white-space', 'nowrap');
-			expect(await item.evaluate((element) => element.scrollHeight <= element.clientHeight)).toBe(
+			expect(
+				await item.evaluate(
+					(element) =>
+						element.scrollHeight <= element.clientHeight &&
+						element.scrollWidth <= element.clientWidth
+				)
+			).toBe(true);
+		}
+		for (const hint of await menu.locator('[data-slot="kbd-group"]').all()) {
+			await expect(hint).toHaveCSS('white-space', 'nowrap');
+			expect(await hint.evaluate((element) => element.scrollHeight <= element.clientHeight)).toBe(
 				true
 			);
 		}
+		const hintedRows = await menu
+			.locator('[data-slot="dropdown-menu-item"]:has([data-slot="kbd-group"])')
+			.evaluateAll((items) =>
+				items.map((item) => {
+					const label = item.querySelector('span')!.getBoundingClientRect();
+					const hint = item.querySelector('[data-slot="kbd-group"]')!.getBoundingClientRect();
+					return { gap: hint.left - label.right, hintRight: hint.right };
+				})
+			);
+		expect(Math.max(...hintedRows.map(({ hintRight }) => hintRight))).toBeCloseTo(
+			Math.min(...hintedRows.map(({ hintRight }) => hintRight)),
+			0
+		);
+		expect(Math.min(...hintedRows.map(({ gap }) => gap))).toBeGreaterThanOrEqual(16);
+		expect(
+			await page.evaluate(
+				() => document.documentElement.scrollWidth <= document.documentElement.clientWidth
+			)
+		).toBe(true);
 		await page.keyboard.press('Escape');
+	}
+});
+
+test('starts with an empty topology and adds every entity type', async ({ page }) => {
+	await page.goto('/');
+	await page.getByRole('button', { name: 'New YAML', exact: true }).click();
+
+	const topologyCard = page.locator('main [data-slot="card"]');
+	const topologyHeader = topologyCard.locator('[data-slot="card-header"]');
+	await expect(topologyCard.locator('[data-slot="card-content"]')).toHaveCount(0);
+	expect(await topologyHeader.evaluate((header) => header.classList.contains('border-b'))).toBe(
+		false
+	);
+	await expect(page.getByRole('button', { name: /source VIN/ })).toHaveCount(0);
+	const [cardBox, headerBox] = await Promise.all([
+		topologyCard.boundingBox(),
+		topologyHeader.boundingBox()
+	]);
+	expect(cardBox).not.toBeNull();
+	expect(headerBox).not.toBeNull();
+	const verticalPadding = headerBox!.y - cardBox!.y;
+	expect(cardBox!.height).toBe(headerBox!.height + verticalPadding * 2);
+
+	await page.getByRole('button', { name: 'More file actions' }).click();
+	await page.getByRole('menuitem', { name: 'View Raw YAML' }).click();
+	await expect(page.getByLabel('Raw YAML source')).toHaveValue('');
+	await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
+
+	for (const [kind, nodeName] of [
+		['source', 'SOURCE_1'],
+		['rail', 'RAIL_1'],
+		['regulator', 'REG_1'],
+		['load', 'LOAD_1']
+	] as const) {
+		await page.getByRole('button', { name: /^Add/ }).click();
+		await page.getByRole('menuitem', { name: `Add ${kind}` }).click();
+		await expect(topologyCard.locator('[data-slot="card-content"]')).toBeVisible();
+		await expect(
+			page.getByRole('button', { name: new RegExp(`^${kind} ${nodeName}`) })
+		).toBeVisible();
+		await page.keyboard.press('Escape');
+
+		if (kind !== 'load') {
+			page.once('dialog', (dialog) => dialog.accept());
+			await page.keyboard.press('Shift+N');
+			await expect(topologyCard.locator('[data-slot="card-content"]')).toHaveCount(0);
+		}
 	}
 });
 
@@ -437,7 +572,7 @@ test('adds topology nodes with guarded shortcuts and lists all shortcut keys', a
 	await page.getByRole('button', { name: 'New YAML', exact: true }).click();
 
 	await page.keyboard.press('s');
-	await expect(page.getByRole('button', { name: /^source SOURCE_2/ })).toBeVisible();
+	await expect(page.getByRole('button', { name: /^source SOURCE_1/ })).toBeVisible();
 	await page.keyboard.press('Escape');
 	await page.keyboard.press('e');
 	await expect(page.getByRole('button', { name: /^regulator REG_1/ })).toBeVisible();
@@ -467,9 +602,10 @@ test('adds topology nodes with guarded shortcuts and lists all shortcut keys', a
 	await page.keyboard.press('l');
 	await expect(page.getByRole('button', { name: /^load / })).toHaveCount(loadCount);
 	await expect(shortcuts.locator('dl')).toHaveText(
-		'Add Source SAdd Regulator EAdd Rail AAdd Load LOpen File Ctrl+OSave / Download Ctrl+SNew YAML Ctrl+NView Raw YAML Ctrl+Shift+Y'
+		'Add Source SAdd Regulator EAdd Rail AAdd Load LOpen File Ctrl+OSave / Download Ctrl+SNew YAML Shift+NView Raw YAML Ctrl+Shift+Y'
 	);
 	await expect(shortcuts.getByText('Mod', { exact: true })).toHaveCount(0);
+	await expect(shortcuts.getByText('Ctrl+N', { exact: true })).toHaveCount(0);
 	await page.keyboard.press('Escape');
 
 	for (const viewport of [
@@ -501,6 +637,42 @@ test('adds topology nodes with guarded shortcuts and lists all shortcut keys', a
 	await page.getByRole('button', { name: /^Add/ }).click();
 	await page.keyboard.press('s');
 	await expect(page.getByRole('button', { name: /^source / })).toHaveCount(sourceCount);
+});
+
+test('uses Shift+N only on the unblocked topology', async ({ page }) => {
+	await page.goto('/');
+	await page.getByRole('button', { name: 'New YAML', exact: true }).click();
+
+	await page.keyboard.press('a');
+	await expect(page.getByRole('dialog')).toBeVisible();
+	await page.keyboard.press('Shift+N');
+	await expect(page.getByRole('dialog')).toBeVisible();
+	await page.keyboard.press('Escape');
+	await expect(page.getByRole('button', { name: /^rail RAIL_1/ })).toBeVisible();
+
+	await page.getByRole('button', { name: 'More file actions' }).click();
+	await page.keyboard.press('Shift+N');
+	await expect(page.getByRole('menu')).toBeVisible();
+	await page.keyboard.press('Escape');
+
+	await page.getByRole('button', { name: 'More file actions' }).click();
+	await page.getByRole('menuitem', { name: 'View Raw YAML' }).click();
+	await page.getByLabel('Raw YAML source').press('Shift+N');
+	await expect(page.getByRole('dialog', { name: 'Raw YAML' })).toBeVisible();
+	await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
+
+	await page.getByRole('button', { name: 'More file actions' }).click();
+	await page.getByRole('menuitem', { name: 'Keyboard Shortcuts' }).click();
+	await page.keyboard.press('Shift+N');
+	await expect(page.getByRole('dialog', { name: 'Keyboard Shortcuts' })).toBeVisible();
+	await page.keyboard.press('Escape');
+
+	await page.keyboard.press('Control+N');
+	await expect(page.getByRole('button', { name: /^rail RAIL_1/ })).toBeVisible();
+
+	page.once('dialog', (dialog) => dialog.accept());
+	await page.keyboard.press('Shift+N');
+	await expect(page.getByRole('button', { name: /^rail RAIL_1/ })).toHaveCount(0);
 });
 
 test('edits and deletes the exact node from its context menu', async ({ page }) => {

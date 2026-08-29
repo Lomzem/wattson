@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	applyNodeField,
+	canonicalDocument,
 	parsePowerDocument,
 	patchScalar,
 	replaceSection,
@@ -29,6 +30,16 @@ unknown_top: true\r
 `;
 
 describe('Powerman YAML document', () => {
+	it('creates an exact empty canonical document', () => {
+		const parsed = canonicalDocument();
+
+		expect(parsed.source).toBe('');
+		expect(parsed.model.sources).toEqual([]);
+		expect(parsed.model.regulators).toEqual([]);
+		expect(parsed.model.rails).toEqual([]);
+		expect(parsed.model.loads).toEqual([]);
+	});
+
 	it('returns imported text without an edit', () => {
 		expect(parsePowerDocument(sample).source).toBe(sample);
 	});

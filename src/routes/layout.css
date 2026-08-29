@@ -209,11 +209,14 @@
 	.node-metrics {
 		@apply mt-2 grid min-w-0 gap-x-3 gap-y-1 border-t border-border/60 pt-2;
 	}
-	.node-metrics-source,
-	.node-metrics-rail,
 	.node-metrics-load,
 	.node-metrics-regulator {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+	.node-metrics-source,
+	.node-metrics-rail {
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		@apply gap-x-2;
 	}
 	.node-metric {
 		@apply min-w-0;
@@ -224,7 +227,7 @@
 	.node-metric dd {
 		@apply mt-0.5 text-xs leading-tight font-medium [overflow-wrap:anywhere];
 	}
-	.node-metric-primary {
+	.node-metrics-load .node-metric-primary {
 		grid-column: 1 / -1;
 		@apply text-center;
 	}
@@ -234,11 +237,19 @@
 	.node-metrics-regulator [data-metric='efficiency'] {
 		grid-column: 1;
 	}
-	.node-metrics-source [data-metric='max'],
-	.node-metrics-rail [data-metric='max'],
 	.node-metrics-load [data-metric='maximum'],
 	.node-metrics-regulator [data-metric='current-limit'] {
 		grid-column: 2;
+		@apply text-right;
+	}
+	.node-metrics-source [data-metric='nominal'],
+	.node-metrics-rail [data-metric='nominal'] {
+		grid-column: 2;
+		@apply text-center;
+	}
+	.node-metrics-source [data-metric='max'],
+	.node-metrics-rail [data-metric='max'] {
+		grid-column: 3;
 		@apply text-right;
 	}
 	.node-issue {
