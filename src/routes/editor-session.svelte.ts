@@ -185,6 +185,11 @@ export class EditorSession {
 		this.linkFeedback = null;
 	}
 
+	cancelActiveLink() {
+		this.linkMode = null;
+		this.linkError = '';
+	}
+
 	newDocument() {
 		this.setDocument(canonicalDocument(), 'power-tree.yaml');
 	}
@@ -236,7 +241,7 @@ export class EditorSession {
 
 	openRaw() {
 		if (!this.parsed) return;
-		this.clearLinkState();
+		this.cancelActiveLink();
 		this.selected = null;
 		this.rawDraft = this.parsed.source;
 		this.rawError = '';

@@ -70,7 +70,7 @@
 	}
 
 	async function openCommand() {
-		editor.clearLinkState();
+		editor.cancelActiveLink();
 		if (editor.dirty && !window.confirm('Discard the current unsaved changes?')) return;
 		const picker = (window as PickerWindow).showOpenFilePicker;
 		if (!picker) return input.click();

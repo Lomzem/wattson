@@ -35,6 +35,10 @@ test.describe('topology linking', () => {
 			.first()
 			.click();
 		await expect(page.getByText('REG_3V3 input changed to USB.')).toBeVisible();
+		await page.getByRole('button', { name: 'More file actions' }).click();
+		await page.getByRole('menuitem', { name: 'View Raw YAML' }).click();
+		await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click();
+		await expect(page.getByRole('button', { name: 'Undo' })).toBeVisible();
 		await page.getByRole('button', { name: 'Undo' }).click();
 		await expect(page.getByText('Link change undone.')).toBeVisible();
 	});

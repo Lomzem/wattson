@@ -195,7 +195,7 @@
 	}
 	async function cancelLink(restoreFocus = true) {
 		const initiator = editor.linkMode;
-		editor.clearLinkState();
+		editor.cancelActiveLink();
 		if (!initiator || !restoreFocus) return;
 		await tick();
 		document
