@@ -1055,7 +1055,7 @@ test('edits relationship Select fields and has no mobile link-mode overflow', as
 	await page.getByRole('option', { name: 'USB' }).click();
 	await dialog.getByRole('button', { name: 'Save' }).click();
 
-	let raw = await rawYaml(page);
+	const raw = await rawYaml(page);
 	await expect(raw).toHaveValue(/name: REG_3V3, input: USB, output: 3V3/);
 	await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
 
